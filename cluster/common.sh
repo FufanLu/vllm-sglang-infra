@@ -142,7 +142,7 @@ gpu_info() {
 # free_port prints a TCP port nobody listens on. Single-GPU jobs often share
 # an 8-GPU node, so servers must not assume fixed ports.
 free_port() {
-  "${PYTHON:-python3}" -P -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])'
+  "${PYTHON:-python3}" -I -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])'
 }
 
 # vllm_args_default: flags every replica gets. Dev mode serves
