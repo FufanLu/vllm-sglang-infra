@@ -23,6 +23,12 @@ allow it overflow to an external provider.
 | Hit rate with two gateways in front of one pool | 70% (approximate index) | **80%** (precise, KV events) |
 | Interactive TTFT p99 under a batch flood | 4768 ms (no flow control) | **293 ms** |
 
+| Measured on an H200 (Explorer) | Result |
+|---|---|
+| vLLM 0.26 (cu129 build) on driver 570 / CUDA 12.8 | works: compile and CUDA graphs included ([cold start](docs/results/d-coldstart-h200.md)) |
+| Qwen3-8B replica start: cold / warm compile cache | 80 s / 65 s (weights load in 5 s) |
+| Wake a sleeping replica | 0.85 s |
+
 ## Why this exists
 
 - **LLM serving stacks assume Kubernetes.** [llm-d](https://github.com/llm-d/llm-d),
