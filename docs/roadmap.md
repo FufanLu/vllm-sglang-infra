@@ -91,6 +91,11 @@ walltime handover.
 
 ## M7 — KV-cache tiering and sharing (A)
 
+**Done on one H200:** with 6 GiB of GPU KV and ~100k tokens of prefixes,
+a 48 GiB CPU tier raises cache hits from 60% to 99.6% and throughput by
+27–53%; the gateway's index tracks both tiers
+([results](results/a-kvtier-h200.md)). Cross-replica sharing is not done.
+
 - CPU offload of evicted KV blocks (vLLM native offload or LMCache); H200
   nodes have 1.5 TB of host memory.
 - Cross-replica sharing so a replica can fetch another's prefix instead of

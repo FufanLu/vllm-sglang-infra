@@ -29,6 +29,7 @@ allow it overflow to an external provider.
 | vLLM 0.26 (cu129 build) on driver 570 / CUDA 12.8 | works: compile and CUDA graphs included ([cold start](docs/results/d-coldstart-h200.md)) |
 | Qwen3-8B replica start: cold / warm compile cache | 80 s / 65 s (weights load in 5 s) |
 | Wake a sleeping replica | 0.85 s |
+| Prompt-cache hits with 6 GiB of GPU KV, without / with a 48 GiB CPU tier | 60% / **99.6%**; throughput +27–53% ([KV tiering](docs/results/a-kvtier-h200.md)) |
 
 ## Why this exists
 
@@ -80,8 +81,8 @@ Picker, so each policy is a composition of small plugins. See
 | **B** PD disaggregation | Gateway picks a prefill and a decode endpoint, relays `kv_transfer_params` (vLLM NixlConnector), falls back to aggregated | ✅ sim · 🚧 H200 |
 | **D** Autoscaling | Scale on in-flight + queued demand with hysteresis; Slurm walltime handover; providers: Slurm, Kubernetes, local processes | ✅ tests · 🚧 H200 |
 | **E** MoE | DP+EP ranks as endpoints, rank-aware routing | 🚧 H200 |
-| **A** KV tiering | CPU-tier blocks from KV events weigh in routing; vLLM native offload | 🚧 H200 |
-| Kubernetes | Pod discovery by label, Deployment scaling, Helm chart, kind demo | 🚧 |
+| **A** KV tiering | CPU-tier blocks from KV events weigh in routing; vLLM native offload | ✅ H200 (1 replica) |
+| Kubernetes | Pod discovery by label, Deployment scaling, Helm chart, kind demo | ✅ kind |
 
 ## Quick start (no GPU)
 
