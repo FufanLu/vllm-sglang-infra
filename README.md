@@ -27,6 +27,7 @@ allow it overflow to an external provider.
 
 | Measured on H200s (Explorer) | Result |
 |---|---|
+| MoE DP+EP (Qwen3-30B-A3B), vLLM's DP balancer → our rank-aware routing | hits 81% → **89%**, 45.5 → **52.5 req/s**, p99 TTFT 1064 → **317 ms** ([MoE](docs/results/e-moe-h200.md)) |
 | Cache hits / throughput, 4 replicas, round-robin → prefix-aware | 47% → **89%** / 61.7 → **76.7 req/s**; median TTFT 45 → 21 ms ([routing](docs/results/m3-routing-h200.md)) |
 | vLLM 0.26 (cu129 build) on driver 570 / CUDA 12.8 | works: compile and CUDA graphs included ([cold start](docs/results/d-coldstart-h200.md)) |
 | Qwen3-8B replica start: cold / warm compile cache | 80 s / 65 s (weights load in 5 s) |
@@ -82,7 +83,7 @@ Picker, so each policy is a composition of small plugins. See
 | Cloud overflow | External OpenAI-compatible providers; overflow when the pool is full; on-prem-only tenants never leave; cost metered | ✅ sim |
 | **B** PD disaggregation | Gateway picks a prefill and a decode endpoint, relays `kv_transfer_params` (vLLM NixlConnector), falls back to aggregated | ✅ sim · 🚧 H200 |
 | **D** Autoscaling | Scale on in-flight + queued demand with hysteresis; Slurm walltime handover; providers: Slurm, Kubernetes, local processes | ✅ tests · ✅ H200 cold start · 🚧 H200 handover |
-| **E** MoE | DP+EP ranks as endpoints, rank-aware routing | 🚧 H200 |
+| **E** MoE | DP+EP ranks as endpoints, rank-aware routing | ✅ H200 |
 | **A** KV tiering | CPU-tier blocks from KV events weigh in routing; vLLM native offload | ✅ H200 (1 replica) |
 | Kubernetes | Pod discovery by label, Deployment scaling, Helm chart, kind demo | ✅ kind |
 

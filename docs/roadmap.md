@@ -86,7 +86,12 @@ H200s: a walltime handover under load.
 **Exit:** ready-time table per strategy; zero failed requests across a
 walltime handover.
 
-## M6 — MoE with DP+EP (E)
+## M6 — MoE with DP+EP (E) ✅
+
+On two H200s with Qwen3-30B-A3B-FP8, routing to DP ranks by prefix beats
+vLLM's internal DP balancer: 81% → 89% cache hits, +15% throughput, p99
+TTFT 1064 → 317 ms. Two independent replicas are faster still at this size
+([results](results/e-moe-h200.md)).
 
 - Qwen3-30B-A3B (FP8) with data-parallel attention and expert parallelism on
   two H200s (`gpu-short`), each rank exposed on its own port.
