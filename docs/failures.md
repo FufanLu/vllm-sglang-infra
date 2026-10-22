@@ -30,9 +30,11 @@ not yet re-run), **open** (cause not established), **worked around**
 | 18 | 10-22 01:20 | Explorer, MoE `11295984` | Both DP ranks segfaulted in `ncclNetPluginInit` | NCCL loaded a network plugin that crashed; source not identified (not in the system lib paths or the CUDA module) | `NCCL_NET_PLUGIN=none` for single-node jobs; log `NCCL_*`/`UCX_*` | `3383e3a` | did not fix it (see #21) |
 | 19 | 10-22 01:40 | Explorer, PD `11295985` | Aggregated baseline finished; both 1P1D instances exited: `NIXL is not available` | vLLM imports `nixl._api`, provided by the `nixl` meta package; only `nixl-cu12` (module `nixl_cu12`) was installed | Meta package unpacked into an overlay on `PYTHONPATH` (no 11 GB env rebuild); `setup_env` installs it with `--no-deps` (its deps pull CUDA 13); PD job imports NIXL first and fails fast | `c399aee` | fix pending |
 | 20 | 10-22 01:51 | Explorer, `sbatch` of the PD rerun | `Batch job submission failed: Unexpected message received`; a retry succeeded (`11297370`) and a duplicate (`11297371`) appeared moments later | Transient slurmctld error: the "failed" submission had been accepted after all | Cancelled the duplicate; before retrying a failed `sbatch`, check `squeue` again after a short wait | — | worked around |
-| 21 | 10-22 02:00 | Explorer, MoE rerun `11297201` | Same segfault in `ncclNetPluginInit` with `NCCL_NET_PLUGIN=none` | NCCL 2.28 starts its built-in transports (IB, socket) through the same plugin path; the crash is likely in IB init on nodes with an IB NIC (not yet confirmed) | `NCCL_IB_DISABLE=1` for single-node jobs; `NCCL_DEBUG=INFO` (INIT,NET) in the MoE job; MoE configurations now run independently so one failing start does not lose the rest | `70fb6e8` | fix pending |
+| 21 | 10-22 02:00 | Explorer, MoE rerun `11297201` | Same segfault in `ncclNetPluginInit` with `NCCL_NET_PLUGIN=none` | NCCL 2.28 starts its built-in transports (IB, socket) through the same plugin path; the crash is likely in IB init on nodes with an IB NIC (not yet confirmed) | `NCCL_IB_DISABLE=1` for single-node jobs; `NCCL_DEBUG=INFO` (INIT,NET) in the MoE job; MoE configurations now run independently so one failing start does not lose the rest | `70fb6e8` | fixed (`11297386`: both ranks past NCCL init) |
 | 22 | 10-22 02:05 | Explorer, KV-tier `11295986` | Run completed (CPU offload: cache hits 59.7% → 99.6%), but the gateway's index showed 0 CPU-tier blocks and 0 orphans | vLLM 0.26's offloading connector sends placeholder CPU events (hash only, no token IDs, `block_size` 0) unless `self_describing_kv_events` is set; the index dropped them silently | Job sets `self_describing_kv_events` through `--kv-transfer-config`; the index counts token-less stores as orphans and reference-counts offload tiers; the job flags an empty CPU tier in `failed.txt` | `62daa0a` | fix pending |
 | 23 | 10-22 04:14 | Explorer, PD rerun `11297370` | NIXL now imported and the aggregated baseline repeated (8.1 req/s); both 1P1D engines then failed: `NIXL_ERR_BACKEND` from `createBackend('UCX')` | NIXL's UCX backend connects to itself at start-up; UCX picked TCP and `connect()` to the node's own address (`10.99.104.52`) was refused. Why the listener was unreachable is not established | The job probes the UCX backend before the engines start: default transports, then `UCX_TLS=cuda_ipc,cuda_copy,sm,self` (same node only); it logs each attempt to `ucx-probe.txt` and exits early if none works | `93e0d23` | fix pending |
+| 24 | 10-22 00:30 | Explorer, routing gateway `11295942` | Gateway died with `Bus error (core dumped)` after 6 min; the four replicas started later, found no gateway, served unregistered and were cancelled by root after about 1 h 25 min (reason not established); the bench waited 4 h for backends that never registered | `push.sh` replaced the gateway binary on `/scratch` from the login node while the job ran it from there; to another NFS client the old file is gone, and its next page fault raises SIGBUS | Jobs copy the binaries to node-local `/tmp` at start and run them from there | `e689ad9` | fix pending |
+| 25 | 10-22 02:43 | Explorer, MoE `11297386` | `dp-ep-ranks` did not come up within 30 min, and the job then hung until its 2 h limit | Start-up: the profiling run took 1715 s because DeepGEMM compiled FP8 kernels with nvcc (CUDA 12.8 module) on first use. Hang: `stop_all` sent TERM to engines still starting, they ignored it, and `wait` blocked | MoE job sets `VLLM_USE_DEEP_GEMM=0`, `VLLM_MOE_USE_DEEP_GEMM=0`, `--moe-backend triton`; engines start in their own process group and `stop_all` sends KILL to the group after 60 s | `7d7961d`, `e689ad9` | fix pending |
 
 Mistakes in my own commands, not in the project. They cost time, so they are listed too:
 
@@ -166,4 +168,36 @@ Prefill and decode run on two GPUs of the same node, so the KV copy should
 not need a network transport: `cuda_ipc` copies GPU to GPU over NVLink, and
 shared memory (`sm`) and `self` carry UCX's own messages. The probe tries the
 default first, so the log records whether the default works on another node.
+
+### 24. Gateway killed by SIGBUS after a push
+
+The routing campaign runs the gateway as its own job on a CPU node, and the
+replicas register with it. Six minutes into the gateway job, `push.sh` (the
+push for #16/#17) unpacked new binaries into `/scratch/$USER/vsi/code` from
+the login node. tar unlinks a file before writing it, which would be safe on
+a local disk. On NFS the unlink happens on the server; only the client that
+unlinks keeps the file alive (as a `.nfsXXXX` name), so for the compute node
+the mapped executable vanished and the next page fault raised SIGBUS. Every
+job now runs its own copy from `/tmp`.
+
+The replicas started 1 h 40 min later, after the gateway was gone. They are
+written to serve unregistered in that case, so they held four GPUs for about
+1 h 25 min until Slurm cancelled them as root; the cause of that
+cancellation does not show in the logs.
+
+### 25. MoE: half-hour start-up, then a hang
+
+#21's change worked: with InfiniBand off, both DP ranks passed NCCL init
+and loaded the model in 11 s. Then `Initial profiling/warmup run took
+1714.60 s`. The log shows the FP8 linear layers on
+`FlashInferFp8DeepGEMMDynamicBlockScaledKernel` and DeepGEMM warning that
+nvcc 12.8 is older than it wants: it was compiling kernels at first use.
+DeepGEMM's own warmup (503 shapes) and FlashInfer's MoE autotuning then took
+about 3 more minutes, and the server was ready at 05:46:31 (Eastern), 3 min
+after the job had given up on it.
+
+Giving up did not stop it. `stop_all` sent TERM to the two `vllm serve`
+processes and waited; an engine in start-up ignores TERM, so `wait` blocked
+until Slurm's time limit, and configurations 2–4 never ran. `stop_all` now
+escalates to KILL on the whole process group after 60 s.
 
