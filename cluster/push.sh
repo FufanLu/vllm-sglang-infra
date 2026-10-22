@@ -13,10 +13,12 @@ if ! ssh -O check "$HOST" 2>/dev/null; then
   echo "no ssh master connection to $HOST; run: ssh $HOST true" >&2
   exit 1
 fi
+# BatchMode: if the master drops mid-run, fail instead of trying a password.
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
 cd "$(dirname "$0")/.."
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/linux-amd64/ ./cmd/...
 
-remote_user=$(ssh "$HOST" 'echo $USER')
+remote_user=$("${SSH[@]}" "$HOST" 'echo $USER')
 dest=/scratch/$remote_user/vsi/code
 # tar over ssh: scp to this cluster drops connections intermittently. On macOS,
 # COPYFILE_DISABLE and the two flags keep AppleDouble ._ files and extended
@@ -27,5 +29,5 @@ if [ "$(uname)" = Darwin ]; then
   tar_flags=(--no-mac-metadata --no-xattrs)
 fi
 tar "${tar_flags[@]}" -cf - cluster bin/linux-amd64 |
-  ssh "$HOST" "mkdir -p $dest /scratch/$remote_user/vsi/logs && tar -C $dest -xf -"
+  "${SSH[@]}" "$HOST" "mkdir -p $dest /scratch/$remote_user/vsi/logs && tar -C $dest -xf -"
 echo "pushed to $HOST:$dest"
