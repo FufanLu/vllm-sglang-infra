@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: vsi
+    folder: vllm-sglang-infra
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards

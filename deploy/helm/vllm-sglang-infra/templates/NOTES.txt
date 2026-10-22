@@ -1,0 +1,3 @@
+Gateway: kubectl port-forward svc/{{ include "vsi.fullname" . }}-gateway 8080:80
+Admin token: kubectl get secret {{ include "vsi.fullname" . }}-admin -o jsonpath='{.data.token}' | base64 -d
+Backends: curl -H "Authorization: Bearer $TOKEN" localhost:8080/admin/backends

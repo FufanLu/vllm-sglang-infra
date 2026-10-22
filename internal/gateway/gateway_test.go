@@ -348,3 +348,20 @@ func TestPromptText(t *testing.T) {
 		t.Errorf("token-id prompt = %q, want empty", got)
 	}
 }
+
+func TestCachedTokensFromEitherSpelling(t *testing.T) {
+	for _, body := range []string{
+		`{"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":6}}}`,
+		`{"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_detail":{"cached_tokens":6}}}`,
+	} {
+		var r struct {
+			Usage *usageInfo `json:"usage"`
+		}
+		json.Unmarshal([]byte(body), &r)
+		var st relayStats
+		st.setUsage(r.Usage)
+		if st.cachedTokens != 6 || st.promptTokens != 10 {
+			t.Errorf("%s: cached %d prompt %d", body, st.cachedTokens, st.promptTokens)
+		}
+	}
+}

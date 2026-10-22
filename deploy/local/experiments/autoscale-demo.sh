@@ -48,5 +48,6 @@ lg -label "phase 1: 4 in flight" -requests 60 -concurrency 4
 lg -label "phase 2: 40 in flight" -requests 1500 -concurrency 40
 lg -label "phase 3: 4 in flight" -requests 180 -concurrency 4
 sleep 15
-kill $sampler
+kill $sampler 2>/dev/null
+wait $sampler 2>/dev/null || true
 awk 'NR % 3 == 1' "$OUT/timeline.txt"

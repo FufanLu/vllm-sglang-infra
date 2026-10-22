@@ -22,7 +22,8 @@ type PodLister interface {
 // Discovery keeps the registry in step with model-server pods: a ready pod
 // is an endpoint at http://<pod IP>:<Port>, labelled with the pod's labels;
 // a pod that is gone, unready, or terminating is removed. Annotations
-// prefixed vsi.io/ become labels too (for example vsi.io/kv_events).
+// prefixed vsi.io/ become labels too (for example vsi.io/kv_events:
+// pod:5557, the pod's own KV-event publisher).
 type Discovery struct {
 	Client   PodLister
 	Selector string
@@ -67,6 +68,11 @@ func (d *Discovery) Sync(ctx context.Context) error {
 		}
 		for k, v := range p.Annotations {
 			if name, ok := cutPrefix(k, "vsi.io/"); ok {
+				// "pod:<port>" names a port on the pod itself, which a
+				// pod template cannot spell out (vsi.io/kv_events: pod:5557).
+				if port, ok := cutPrefix(v, "pod:"); ok {
+					v = fmt.Sprintf("tcp://%s:%s", p.IP, port)
+				}
 				labels[name] = v
 			}
 		}

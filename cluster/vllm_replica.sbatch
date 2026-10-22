@@ -13,6 +13,10 @@
 # The gpu partition allows one GPU per job and four per user, so four of
 # these jobs are the four-replica pool the routing experiments run on.
 #
+# Ports are picked free at start, since several of these jobs can land on
+# one 8-GPU node. The replica publishes KV-cache events (for the precise
+# prefix index) and runs in vLLM dev mode (prefix-cache reset, sleep/wake).
+#
 # Shutdown is a drain, not a kill: Slurm sends SIGTERM ten minutes before the
 # walltime (--signal), the job deregisters so the gateway stops sending new
 # requests, waits for in-flight ones to finish, then stops vLLM.
@@ -20,20 +24,21 @@ set -euo pipefail
 source "${VSI_CODE:-/scratch/$USER/vsi/code}/cluster/common.sh"
 MODEL=${1:?usage: vllm_replica.sbatch <model-name> [vllm serve args...]}
 shift
-PORT=${PORT:-8000}
 NAME=${REPLICA_NAME:-r${SLURM_JOB_ID}}
 DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-300}
 
 gpu_info
 stage_env
+PYTHON=$ENV_DIR/bin/python
+PORT=${PORT:-$(free_port)}
+KV_PORT=${KV_PORT:-$(free_port)}
 LOCAL_MODEL=$(stage_model "$MODEL")
 
 VLOG=$LOGS/vllm_${NAME}.log
-log "starting vllm serve $MODEL on $(hostname):$PORT (log: $VLOG)"
+log "starting vllm serve $MODEL on $(hostname):$PORT, kv events on :$KV_PORT (log: $VLOG)"
 t0=$SECONDS
-"$ENV_DIR/bin/vllm" serve "$LOCAL_MODEL" --served-model-name "$MODEL" \
-  --host 0.0.0.0 --port "$PORT" "$@" >"$VLOG" 2>&1 &
-VLLM_PID=$!
+mapfile -t DEFAULTS < <(vllm_default_args "$KV_PORT")
+start_vllm "$VLOG" "$PORT" "$LOCAL_MODEL" --served-model-name "$MODEL" "${DEFAULTS[@]}" "$@"
 
 GATEWAY=$(cat "$ROOT/gateway.addr" 2>/dev/null || true)
 # The token goes to curl through a private header file, not argv, where any
@@ -61,14 +66,13 @@ drain() {
   local t=0
   while [ "$t" -lt "$DRAIN_TIMEOUT" ]; do
     running=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/metrics" |
-      awk '/^vllm:num_requests_(running|waiting)/ { n += $NF } END { print n + 0 }')
-    [ "${running%.*}" -eq 0 ] && break
+      awk '/^vllm:num_requests_(running|waiting)/ { n += $NF } END { print int(n) }')
+    [ "${running:-0}" -eq 0 ] && break
     sleep 5
     t=$((t + 5))
   done
   log "stopping vllm after ${t}s of drain"
-  kill "$VLLM_PID" 2>/dev/null || true
-  wait "$VLLM_PID" 2>/dev/null || true
+  stop_all
   exit 0
 }
 trap drain TERM INT
@@ -78,11 +82,15 @@ if ! wait_http "http://127.0.0.1:$PORT/health" 1800 "$VLLM_PID"; then
   exit 1
 fi
 log "vllm ready in $((SECONDS - t0))s"
+startup_times "$VLOG" >&2
 
 if [ -n "$GATEWAY" ]; then
   gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-  body=$(printf '{"url":"http://%s:%s","engine":"vllm","labels":{"slurm_job":"%s","node":"%s","gpu":"%s"}}' \
-    "$(hostname)" "$PORT" "$SLURM_JOB_ID" "$(hostname)" "$gpu")
+  host=$(hostname)
+  labels=$(printf '"slurm_job":"%s","node":"%s","gpu":"%s","kv_events":"tcp://%s:%s"' \
+    "$SLURM_JOB_ID" "$host" "$gpu" "$host" "$KV_PORT")
+  [ -n "${ROLE:-}" ] && labels="$labels,\"role\":\"$ROLE\""
+  body=$(printf '{"url":"http://%s:%s","engine":"vllm","labels":{%s}}' "$host" "$PORT" "$labels")
   if admin PUT "$body"; then log "registered $NAME with $GATEWAY"; else log "registration with $GATEWAY failed"; fi
 else
   log "no gateway.addr: serving unregistered at http://$(hostname):$PORT"

@@ -34,6 +34,14 @@ if ! "${UV[@]}" --torch-backend "$CUDA_TAG" "vllm @ $WHEEL"; then
     --index-strategy unsafe-best-match "vllm @ $WHEEL"
 fi
 
+# NIXL moves KV between prefill and decode instances (PD experiments).
+EXTRA_PKGS=${EXTRA_PKGS:-nixl-cu12==1.5.0}
+if [ -n "$EXTRA_PKGS" ]; then
+  log "installing extras: $EXTRA_PKGS"
+  # shellcheck disable=SC2086 # a space-separated list
+  "${UV[@]}" --torch-backend "$CUDA_TAG" $EXTRA_PKGS || log "extras failed; PD experiments will not have NIXL"
+fi
+
 # No GPU here, so this only proves the packages import and shows the CUDA
 # runtime torch was built against.
 "$ENV_DIR/bin/python" -P -c "

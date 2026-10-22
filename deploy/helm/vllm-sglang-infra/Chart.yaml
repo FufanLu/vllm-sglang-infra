@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vllm-sglang-infra
+description: Multi-tenant LLM inference gateway with KV-cache-aware routing, flow control, and autoscaling
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

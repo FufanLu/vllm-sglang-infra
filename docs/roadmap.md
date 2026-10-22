@@ -65,7 +65,8 @@ token counts.
 ## M5 — Cold start and Slurm autoscaling (D) 🚧
 
 Autoscaler done (Slurm, Kubernetes, and process providers; walltime
-handover; tested). Cold-start measurements need H200 time.
+handover; tested; [local demo](results/d-autoscale-local.md)). Cold-start
+measurements are scripted (`cluster/coldstart.sbatch`) and need H200 time.
 
 - Measure ready time of a new replica under weight-staging strategies: NFS
   direct, sequential pre-read, copy to node-local NVMe, page-cache reuse.
@@ -122,10 +123,11 @@ pass-through of `kv_transfer_params`, fallback). Needs the H200 run.
 
 **Exit:** TTFT and TPOT vs the same two GPUs serving aggregated.
 
-## M10 — Kubernetes 🚧
+## M10 — Kubernetes ✅
 
-Pod discovery and Deployment scaling done and tested against a fake API
-server; Helm chart and kind demo in progress.
+Pod discovery by label, Deployment scaling, Helm chart; on kind with
+simulated engines: 4 pods discovered, precise routing at 83% cache hits,
+autoscaling 4 → 1 → 5 → 1 with demand ([results](results/m10-kubernetes-kind.md)).
 
 - Helm chart for the gateway; kind demo with simulated engines.
 - Gateway in front of llm-d's router, injecting the tenant header.

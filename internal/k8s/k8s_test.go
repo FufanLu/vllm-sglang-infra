@@ -22,7 +22,7 @@ func fakeAPI(t *testing.T, replicas *int) *Client {
 			return
 		}
 		io.WriteString(w, `{"items":[
-		 {"metadata":{"name":"vllm-a","labels":{"app":"vllm","role":"decode"},"annotations":{"vsi.io/kv_events":"tcp://10.0.0.5:5557"}},
+		 {"metadata":{"name":"vllm-a","labels":{"app":"vllm","role":"decode"},"annotations":{"vsi.io/kv_events":"pod:5557"}},
 		  "status":{"phase":"Running","podIP":"10.0.0.5","conditions":[{"type":"Ready","status":"True"}]}},
 		 {"metadata":{"name":"vllm-b","labels":{"app":"vllm"}},
 		  "status":{"phase":"Running","podIP":"10.0.0.6","conditions":[{"type":"Ready","status":"False"}]}},

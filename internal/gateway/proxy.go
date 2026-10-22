@@ -452,18 +452,23 @@ func (s *relayStats) outputTokens() int {
 
 func (s *relayStats) setUsage(u *usageInfo) {
 	s.promptTokens, s.completionTokens = u.PromptTokens, u.CompletionTokens
-	if u.Details != nil {
-		s.cachedTokens = u.Details.CachedTokens
+	for _, d := range []*tokenDetails{u.Details, u.Detail} {
+		if d != nil {
+			s.cachedTokens = max(s.cachedTokens, d.CachedTokens)
+		}
 	}
 }
 
 // usageInfo is the usage object of an OpenAI response.
 type usageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	Details          *struct {
-		CachedTokens int `json:"cached_tokens"`
-	} `json:"prompt_tokens_details"`
+	PromptTokens     int           `json:"prompt_tokens"`
+	CompletionTokens int           `json:"completion_tokens"`
+	Details          *tokenDetails `json:"prompt_tokens_details"` // vLLM, OpenAI
+	Detail           *tokenDetails `json:"prompt_tokens_detail"`  // llm-d-inference-sim
+}
+
+type tokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // streamChunk is the part of an OpenAI streaming chunk the gateway inspects.

@@ -231,13 +231,14 @@ type summary struct {
 	ReqPerSec     float64        `json:"req_per_s"`
 	OutTokPerSec  float64        `json:"output_tok_per_s"`
 	TTFTms        map[string]int `json:"ttft_ms"`
+	TPOTms        map[string]int `json:"tpot_ms"`
 	E2Ems         map[string]int `json:"e2e_ms"`
 	CacheHitRatio float64        `json:"prompt_cache_hit_ratio"`
 	Backends      map[string]int `json:"backends"`
 }
 
 func report(c config, all []result, wall time.Duration) {
-	var ttft, e2e []time.Duration
+	var ttft, tpot, e2e []time.Duration
 	s := summary{Label: c.label, Requests: len(all), Backends: map[string]int{}}
 	var prompt, cached, output int
 	var firstErr error
@@ -256,12 +257,15 @@ func report(c config, all []result, wall time.Duration) {
 			continue
 		}
 		ttft, e2e = append(ttft, r.ttft), append(e2e, r.e2e)
+		if r.output > 1 && r.ttft > 0 {
+			tpot = append(tpot, (r.e2e-r.ttft)/time.Duration(r.output-1))
+		}
 		prompt, cached, output = prompt+r.prompt, cached+r.cached, output+r.output
 	}
 	s.WallSeconds = wall.Seconds()
 	s.ReqPerSec = float64(len(all)-s.Errors) / wall.Seconds()
 	s.OutTokPerSec = float64(output) / wall.Seconds()
-	s.TTFTms, s.E2Ems = percentiles(ttft), percentiles(e2e)
+	s.TTFTms, s.TPOTms, s.E2Ems = percentiles(ttft), percentiles(tpot), percentiles(e2e)
 	if prompt > 0 {
 		s.CacheHitRatio = float64(cached) / float64(prompt)
 	}
@@ -269,6 +273,7 @@ func report(c config, all []result, wall time.Duration) {
 	fmt.Printf("%s: %d requests, %d errors, %.1fs wall\n", orDefault(s.Label, "run"), s.Requests, s.Errors, s.WallSeconds)
 	fmt.Printf("  throughput   %.1f req/s, %.0f output tok/s\n", s.ReqPerSec, s.OutTokPerSec)
 	fmt.Printf("  TTFT ms      p50 %d  p90 %d  p99 %d\n", s.TTFTms["p50"], s.TTFTms["p90"], s.TTFTms["p99"])
+	fmt.Printf("  TPOT ms      p50 %d  p90 %d  p99 %d\n", s.TPOTms["p50"], s.TPOTms["p90"], s.TPOTms["p99"])
 	fmt.Printf("  E2E ms       p50 %d  p90 %d  p99 %d\n", s.E2Ems["p50"], s.E2Ems["p90"], s.E2Ems["p99"])
 	fmt.Printf("  prompt cache %.1f%% of prompt tokens served from cache\n", 100*s.CacheHitRatio)
 	names := make([]string, 0, len(s.Backends))

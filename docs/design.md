@@ -107,16 +107,43 @@ alternative (16 with the defaults). Once the alternative serves the prefix,
 it holds it too, so a hot prefix spreads to a second replica instead of
 overloading the first.
 
+- `precise-prefix` (M3): the same fraction, from what the engines actually
+  hold.
+  - **Index.** Replicas publish `BlockStored` / `BlockRemoved` /
+    `AllBlocksCleared` events over ZeroMQ, and `internal/kvsync` keeps one
+    subscription per publisher address. Engine block hashes are opaque
+    (vLLM hashes with SHA-256 and a deployment seed), so `internal/kvindex`
+    re-keys each stored block by its own chained hash of the block's token
+    IDs, which the events carry.
+  - **Matching a request.** The gateway asks an engine's `/tokenize` for the
+    prompt tokens (chat template applied) and computes the same hashes.
+    Blocks are tracked per tier, from the event's `medium`. A block found
+    only in CPU memory counts `cpu_weight` (default 0.5), since loading it is
+    cheaper than recomputing but not free.
+  - **Before events arrive.** Events trail the engine by up to a flush
+    interval, so a small recent-picks index bridges the gap for bursts of a
+    new prefix.
+  - **Shared publishers.** Publishers that dial out instead of binding
+    (llm-d-inference-sim) connect to `kvrelay`, and gateways subscribe to
+    it. Events on a shared subscription are attributed by topic
+    (`kv@<host>[:<port>]@<model>`).
+
 **Planned scorers.**
 
-- Precise prefix matching (M3): consume vLLM KV-cache events so the index
-  reflects actual evictions.
 - DP-rank-aware routing (M6): ranks are endpoints. Because MoE ranks step in
   lockstep, imbalance wastes every rank's step, so the load term carries more
   weight than with independent replicas.
 - Tier-aware prefix (M7): GPU hit > CPU hit > peer hit > miss.
-- Pair selection for prefill/decode (M9): choose a prefill endpoint by
-  prefix and queue, a decode endpoint by KV headroom.
+- Pair selection for prefill/decode (M9, implemented):
+  - Endpoints labelled `role: prefill` and `role: decode` form a
+    disaggregated pool.
+  - The gateway schedules the prefill endpoint (with the prefix scorers),
+    sends it the request with `max_tokens: 1` and
+    `kv_transfer_params.do_remote_decode: true`, and passes the
+    `kv_transfer_params` it returns, untouched, to the decode endpoint it
+    schedules next.
+  - The decode endpoint pulls the KV over NIXL and streams to the client.
+  - If the prefill fails, the decode endpoint prefills locally.
 - Cost (M11): external providers score lower unless local capacity is
   exhausted.
 
@@ -175,16 +202,44 @@ when the predicted TTFT of the interactive band would exceed its SLO.
 
 A new replica's ready time is: queue wait + env unpack + weight staging +
 engine start (load, compile, CUDA graphs). The first three dominate on this
-cluster and are what M5 measures and reduces. The Slurm autoscaler scales on
-queue depth with hysteresis, and replaces each replica before its walltime:
-submit the successor, wait until it registers, then drain the predecessor.
+cluster and are what M5 measures and reduces (`cluster/coldstart.sbatch`).
+
+The autoscaler (`internal/autoscale`) reconciles every interval:
+
+- **Sizing.** Demand is in-flight plus queued requests. The desired size is
+  ceil(demand / target per replica), clamped to [min, max].
+- **Scale-up** is immediate. **Scale-down** waits until demand has been low
+  for `scale_down_after`. It cancels queued jobs first, then drains the
+  replicas closest to their walltime.
+- **Walltime handover.** A replica within `handover_lead` (20 min) of its
+  walltime stops counting as capacity, so a successor is submitted while it
+  still serves. It then drains itself on Slurm's early SIGTERM.
+
+Providers:
+
+- **Slurm:** `sbatch` / `scancel --signal=TERM --batch`.
+- **Kubernetes:** Deployment scale subresource.
+- **Local processes:** for demos.
 
 ## 11. Kubernetes and llm-d (M10)
 
-The gateway ships as a container and a Helm chart. On Kubernetes it can stand
-in front of llm-d's router: the gateway owns identity, quotas, metering, and
-overflow; llm-d owns endpoint picking inside the pool. Demonstrated on kind
-with llm-d-inference-sim.
+The gateway ships as a container and a Helm chart
+(`deploy/helm/vllm-sglang-infra`).
+
+- **Discovery.** Pods labelled `vsi.io/role=model-server` are found through
+  the API with the gateway's service account (RBAC: pods get/list,
+  deployments/scale get/patch). Each ready pod becomes an endpoint, and
+  `vsi.io/*` annotations become labels; `vsi.io/kv_events: pod:5557` names
+  the pod's own event publisher.
+- **Autoscaling.** The `kubernetes` provider scales the model-server
+  Deployment.
+- **Demo.** `deploy/kind/demo.sh` runs it all on kind with simulated
+  engines.
+
+On a cluster that runs llm-d, the gateway can stand in front of llm-d's
+router. The gateway owns identity, quotas, metering, and overflow; llm-d
+owns endpoint picking inside the pool, reading the tenant from the
+`x-llm-d-inference-fairness-id` header the gateway injects.
 
 ## 12. Cloud overflow (M11)
 

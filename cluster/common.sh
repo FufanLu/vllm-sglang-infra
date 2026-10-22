@@ -18,7 +18,10 @@ LOGS=$ROOT/logs
 # relies on CUDA minor-version compatibility. check_gpu.sbatch verifies it.
 VLLM_VERSION=${VLLM_VERSION:-0.26.0}
 CUDA_TAG=${CUDA_TAG:-cu129}
-ENV_NAME=vsi-vllm-${VLLM_VERSION}-${CUDA_TAG}
+# Bump ENV_REV when the package set changes: nodes keep unpacked envs, and
+# a new name is what makes them unpack the new one. r2 adds NIXL.
+ENV_REV=${ENV_REV:-r2}
+ENV_NAME=vsi-vllm-${VLLM_VERSION}-${CUDA_TAG}-${ENV_REV}
 ENV_DIR=/tmp/$ENV_NAME # identical path on every node, so the packed venv needs no rewriting
 ENV_TAR=$ROOT/envs/$ENV_NAME.tar
 
@@ -93,3 +96,64 @@ gpu_info() {
   nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader >&2 || true
   nvidia-smi topo -m >&2 || true
 }
+
+# free_port prints a TCP port nobody listens on. Single-GPU jobs often share
+# an 8-GPU node, so servers must not assume fixed ports.
+free_port() {
+  "${PYTHON:-python3}" -P -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])'
+}
+
+# vllm_args_default: flags every replica gets. Dev mode serves
+# /reset_prefix_cache and sleep/wake for experiments; prompt-token details
+# report cached tokens in usage; KV events feed the precise index.
+vllm_default_args() { # vllm_default_args KV_PORT
+  printf '%s\n' --enable-prompt-tokens-details \
+    --kv-events-config "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:$1\",\"topic\":\"kv\"}"
+}
+export VLLM_SERVER_DEV_MODE=1
+
+# start_vllm LOG PORT ARGS... starts vllm serve in the background and sets
+# VLLM_PID. stop_vllm stops it. Several may run at once (PIDS).
+PIDS=()
+start_vllm() {
+  local log=$1 port=$2
+  shift 2
+  "$ENV_DIR/bin/vllm" serve "$@" --host 0.0.0.0 --port "$port" >"$log" 2>&1 &
+  VLLM_PID=$!
+  PIDS+=("$VLLM_PID")
+}
+stop_all() {
+  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && wait "$p" 2>/dev/null || true; done
+  PIDS=()
+}
+
+# startup_times LOG prints the phases of a vLLM start from its log.
+startup_times() {
+  grep -hoE "Model loading took [0-9.]+ GiB( memory)? and [0-9.]+ seconds|torch.compile takes [0-9.]+ s in total|Graph capturing finished in [0-9]+ secs|init engine \(profile, create kv cache, warmup model\) took [0-9.]+ seconds" "$1" || true
+}
+
+# wait_backends URL TOKEN N TIMEOUT waits until the gateway has N healthy backends.
+wait_backends() {
+  local url=$1 token=$2 n=$3 timeout=$4 t=0 have=0
+  while [ "$t" -lt "$timeout" ]; do
+    have=$(curl -s --noproxy '*' -H "Authorization: Bearer $token" "$url/admin/backends" | grep -o '"healthy":true' | wc -l | tr -d ' ')
+    [ "$have" -ge "$n" ] && return 0
+    sleep 10
+    t=$((t + 10))
+  done
+  log "only $have of $n backends healthy after ${timeout}s"
+  return 1
+}
+
+# local_gateway CONFIG_FILE PORT starts a gateway inside the job (for
+# experiments that run their own pool) and sets GATEWAY_PID.
+local_gateway() {
+  "$CODE/bin/linux-amd64/gateway" -config "$1" >"$LOGS/gateway_${SLURM_JOB_ID}_$(basename "$1" .yaml).log" 2>&1 &
+  GATEWAY_PID=$!
+  PIDS+=("$GATEWAY_PID")
+  wait_http "http://127.0.0.1:$2/healthz" 60 "$GATEWAY_PID"
+}
+
+# loadgen ARGS... runs the load generator.
+loadgen() { "$CODE/bin/linux-amd64/loadgen" "$@"; }
