@@ -160,9 +160,10 @@ overloading the first.
 - Metrics adapters map engine series to one snapshot: vLLM
   `vllm:num_requests_running|waiting`, `vllm:kv_cache_usage_perc` (V1) or
   `vllm:gpu_cache_usage_perc` (V0); SGLang `sglang:num_running_reqs`,
-  `sglang:num_queue_reqs`, `sglang:token_usage`. Counts are summed across
-  series and KV usage takes the maximum, which is right for servers that
-  front several DP engine cores.
+  `sglang:num_queue_reqs`, `sglang:token_usage` (checked against the gauges
+  in SGLang 0.5.22, `srt/observability/metrics_collector.py`). Counts are
+  summed across series and KV usage takes the maximum, which is right for
+  servers that front several DP engine cores.
 
 ## 7. Failure handling
 
