@@ -27,6 +27,14 @@ ENV_TAR=$ROOT/envs/$ENV_NAME.tar
 
 mkdir -p "$ROOT/envs" "$MODELS" "$LOGS"
 
+# Jobs run the Go binaries from a node-local copy. push.sh replaces the files
+# on /scratch from the login node, and a process on another NFS client still
+# running the old file then dies with SIGBUS (failure #24).
+BIN=/tmp/vsi-bin-$USER-${SLURM_JOB_ID:-$$}
+if [ -d "$CODE/bin/linux-amd64" ] && [ ! -d "$BIN" ]; then
+  mkdir -p "$BIN" && cp "$CODE/bin/linux-amd64/"* "$BIN/"
+fi
+
 # Compute nodes have no internet, and caches must not land in $HOME.
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
 export HF_HOME=/tmp/vsi-hf-$USER
@@ -152,13 +160,22 @@ PIDS=()
 start_vllm() {
   local log=$1 port=$2
   shift 2
-  "$ENV_DIR/bin/vllm" serve "$@" --host 0.0.0.0 --port "$port" >"$log" 2>&1 &
+  # Its own process group, so stop_all can reach the engine's children.
+  setsid "$ENV_DIR/bin/vllm" serve "$@" --host 0.0.0.0 --port "$port" >"$log" 2>&1 &
   VLLM_PID=$!
   PIDS+=("$VLLM_PID")
 }
+# stop_all sends TERM, and KILL to whatever is left after 60 s: a vLLM still
+# starting up can ignore TERM, which once held a job until its time limit.
 stop_all() {
-  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
-  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && wait "$p" 2>/dev/null || true; done
+  local p t
+  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill -TERM -- "-$p" "$p" 2>/dev/null || true; done
+  for p in "${PIDS[@]:-}"; do
+    [ -n "$p" ] || continue
+    for ((t = 0; t < 60; t++)); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    kill -KILL -- "-$p" "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
   PIDS=()
 }
 
@@ -185,11 +202,11 @@ wait_backends() {
 # local_gateway CONFIG_FILE PORT starts a gateway inside the job (for
 # experiments that run their own pool) and sets GATEWAY_PID.
 local_gateway() {
-  "$CODE/bin/linux-amd64/gateway" -config "$1" >"$LOGS/gateway_${SLURM_JOB_ID}_$(basename "$1" .yaml).log" 2>&1 &
+  "$BIN/gateway" -config "$1" >"$LOGS/gateway_${SLURM_JOB_ID}_$(basename "$1" .yaml).log" 2>&1 &
   GATEWAY_PID=$!
   PIDS+=("$GATEWAY_PID")
   wait_http "http://127.0.0.1:$2/healthz" 60 "$GATEWAY_PID"
 }
 
 # loadgen ARGS... runs the load generator.
-loadgen() { "$CODE/bin/linux-amd64/loadgen" "$@"; }
+loadgen() { "$BIN/loadgen" "$@"; }

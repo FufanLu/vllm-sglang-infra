@@ -24,4 +24,4 @@ VSI_ADMIN_TOKEN=$(cat "$ROOT/admin.token")
 echo "http://$(hostname):$PORT" >"$ROOT/gateway.addr"
 trap 'rm -f "$ROOT/gateway.addr"' EXIT
 log "gateway at $(cat "$ROOT/gateway.addr")"
-"$CODE/bin/linux-amd64/gateway" -config "$CONFIG"
+"$BIN/gateway" -config "$CONFIG"
