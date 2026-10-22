@@ -26,7 +26,11 @@ gpu_info 2>"$OUT/gpu.txt"
 stage_env
 PYTHON=$ENV_DIR/bin/python
 LOCAL=$(stage_model "$MODEL")
-COMMON=(--served-model-name "$MODEL" --max-model-len 8192 --enable-prompt-tokens-details)
+# Kernels that need no build at start-up. With the defaults, DeepGEMM
+# compiled FP8 kernels with nvcc during the profiling run, which took 29 of
+# the 32 minutes a DP rank needed to start (failure #25).
+export VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM:-0} VLLM_MOE_USE_DEEP_GEMM=${VLLM_MOE_USE_DEEP_GEMM:-0}
+COMMON=(--served-model-name "$MODEL" --max-model-len 8192 --enable-prompt-tokens-details --moe-backend "${MOE_BACKEND:-triton}")
 WORK=(-model "$MODEL" -requests "${REQUESTS:-800}" -concurrency "${CONCURRENCY:-32}" -groups "${PROMPT_GROUPS:-64}"
   -prefix-words "${PREFIX_WORDS:-1000}" -max-tokens "${MAX_TOKENS:-64}" -seed 1)
 GWPORT=$(free_port)
@@ -44,23 +48,6 @@ bench() { # bench LABEL
   curl -s --noproxy '*' -X POST -H 'Authorization: Bearer bench' "http://127.0.0.1:$GWPORT/admin/reset_prefix_cache" >/dev/null
   sleep 2
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$1" "${WORK[@]}" -json | tee "$OUT/$1.txt"
-}
-
-export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
-
-# Each configuration runs on its own: one that fails to start is logged
-# and the job moves on to the next.
-config_ok() { # config_ok NAME PORT... waits for every server to come up
-  local name=$1
-  shift
-  for p in "$@"; do
-    if ! wait_http "http://127.0.0.1:$p/health" 1800 "$VLLM_PID"; then
-      log "config $name failed to start"
-      echo "$name: failed to start" >>"$OUT/failed.txt"
-      stop_all
-      return 1
-    fi
-  done
 }
 
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
