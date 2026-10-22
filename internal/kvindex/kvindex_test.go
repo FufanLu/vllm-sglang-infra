@@ -63,3 +63,31 @@ func TestOrphansAreNotIndexed(t *testing.T) {
 		t.Errorf("gpu %d orphans %d: a block whose parent is unknown cannot be keyed", g, orphans)
 	}
 }
+
+func TestOffloadTierIsReferenceCounted(t *testing.T) {
+	ix := New()
+	ix.Apply("e", stored([]string{"h0", "h1", "h2"}, "", seq(0, 12), "GPU"))
+	// Two offloaded chunks both contain block 1 (a shared prefix that does
+	// not end on a chunk boundary), so it is announced twice.
+	ix.Apply("e", stored([]string{"h0", "h1"}, "", seq(0, 8), "CPU"))
+	ix.Apply("e", stored([]string{"h1", "h2"}, "h0", seq(4, 8), "CPU"))
+	ix.Apply("e", kvevents.Batch{Events: []kvevents.Event{{Type: kvevents.BlockRemoved, BlockHashes: []string{"h0", "h1", "h2"}, Medium: "GPU"}}})
+	// Evicting the first chunk must not drop block 1: the second holds it.
+	ix.Apply("e", kvevents.Batch{Events: []kvevents.Event{{Type: kvevents.BlockRemoved, BlockHashes: []string{"h0", "h1"}, Medium: "CPU"}}})
+	if g, c, _ := ix.Stats("e"); g != 0 || c != 2 {
+		t.Errorf("stats gpu %d cpu %d, want blocks 1-2 still on CPU", g, c)
+	}
+	ix.Apply("e", kvevents.Batch{Events: []kvevents.Event{{Type: kvevents.BlockRemoved, BlockHashes: []string{"h1", "h2"}, Medium: "CPU"}}})
+	if g, c, _ := ix.Stats("e"); g != 0 || c != 0 {
+		t.Errorf("stats gpu %d cpu %d after both chunks were evicted", g, c)
+	}
+}
+
+func TestTokenlessEventsAreCountedAsOrphans(t *testing.T) {
+	ix := New()
+	// The offloading connector's placeholder payload: hash only.
+	ix.Apply("e", kvevents.Batch{Events: []kvevents.Event{{Type: kvevents.BlockStored, BlockHashes: []string{"c7"}, Medium: "CPU"}}})
+	if _, c, orphans := ix.Stats("e"); c != 0 || orphans != 1 {
+		t.Errorf("cpu %d orphans %d: a block without token IDs cannot be keyed but must be visible", c, orphans)
+	}
+}

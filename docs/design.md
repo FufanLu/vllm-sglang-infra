@@ -120,6 +120,12 @@ overloading the first.
     Blocks are tracked per tier, from the event's `medium`. A block found
     only in CPU memory counts `cpu_weight` (default 0.5), since loading it is
     cheaper than recomputing but not free.
+  - **CPU-tier events.** vLLM's offloading connector sends CPU events with
+    token IDs only when `kv_connector_extra_config.self_describing_kv_events`
+    is on; otherwise they carry just a hash and the index counts them as
+    unkeyable (`vsi_kvindex_orphan_blocks`). The connector can announce a
+    block once per offloaded chunk that contains it, so the CPU and other
+    offload tiers are reference-counted.
   - **Before events arrive.** Events trail the engine by up to a flush
     interval, so a small recent-picks index bridges the gap for bursts of a
     new prefix.

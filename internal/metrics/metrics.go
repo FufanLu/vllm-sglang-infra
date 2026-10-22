@@ -190,7 +190,7 @@ type KVIndexStats func(ep *backend.Endpoint) (gpu, cpu, orphans int)
 func (m *Metrics) RegisterKVIndex(reg *backend.Registry, stats KVIndexStats) {
 	m.Registry.MustRegister(&kvIndexCollector{reg: reg, stats: stats,
 		blocks:  prometheus.NewDesc("vsi_kvindex_blocks", "KV blocks the precise index believes an endpoint holds, by tier.", []string{"backend", "tier"}, nil),
-		orphans: prometheus.NewDesc("vsi_kvindex_orphan_blocks", "Stored blocks whose parent was never seen (missed events).", []string{"backend"}, nil),
+		orphans: prometheus.NewDesc("vsi_kvindex_orphan_blocks", "Stored blocks the index could not key: parent never seen (missed events) or no token IDs in the event.", []string{"backend"}, nil),
 	})
 }
 

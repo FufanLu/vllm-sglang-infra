@@ -30,7 +30,10 @@ for mode in gpu-only cpu-offload; do
   port=$(free_port); kv=$(free_port)
   mapfile -t DEFAULTS < <(vllm_default_args "$kv")
   extra=()
-  [ "$mode" = cpu-offload ] && extra=(--kv-offloading-size "${CPU_KV_GIB:-48}" --kv-offloading-backend native)
+  # Without self_describing_kv_events the connector's CPU events carry only
+  # a hash (no token IDs), and the gateway cannot place them in its index.
+  [ "$mode" = cpu-offload ] && extra=(--kv-offloading-size "${CPU_KV_GIB:-48}" --kv-offloading-backend native
+    --kv-transfer-config '{"kv_connector_extra_config":{"self_describing_kv_events":true}}')
   start_vllm "$OUT/vllm_$mode.log" "$port" "$LOCAL" "${COMMON[@]}" "${DEFAULTS[@]}" "${extra[@]}"
   wait_http "http://127.0.0.1:$port/health" 1800 "$VLLM_PID"
   cfg=$OUT/gateway-$mode.yaml
@@ -42,6 +45,9 @@ for mode in gpu-only cpu-offload; do
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$mode warmup" "${WORK[@]}" >/dev/null
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$mode" "${WORK[@]}" -json | tee "$OUT/$mode.txt"
   curl -s --noproxy '*' "http://127.0.0.1:$GWPORT/metrics" | grep -E '^vsi_kvindex' | tee "$OUT/$mode-index.txt" || true
+  if [ "$mode" = cpu-offload ] && grep -q 'tier="cpu"} 0$' "$OUT/$mode-index.txt"; then
+    echo "cpu-offload: the index saw no CPU-tier blocks" | tee -a "$OUT/failed.txt"
+  fi
   stop_all
 done
 log "results in $OUT"
