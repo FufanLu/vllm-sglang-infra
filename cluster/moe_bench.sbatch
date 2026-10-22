@@ -45,35 +45,75 @@ bench() { # bench LABEL
   sleep 2
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$1" "${WORK[@]}" -json | tee "$OUT/$1.txt"
 }
-up() { wait_http "http://127.0.0.1:$1/health" 1800 "$VLLM_PID"; }
+
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
+
+# Each configuration runs on its own: one that fails to start is logged
+# and the job moves on to the next.
+config_ok() { # config_ok NAME PORT... waits for every server to come up
+  local name=$1
+  shift
+  for p in "$@"; do
+    if ! wait_http "http://127.0.0.1:$p/health" 1800 "$VLLM_PID"; then
+      log "config $name failed to start"
+      echo "$name: failed to start" >>"$OUT/failed.txt"
+      stop_all
+      return 1
+    fi
+  done
+}
+
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
+
+# Each configuration runs on its own: one that fails to start is logged
+# and the job moves on to the next.
+config_ok() { # config_ok NAME PORT... waits for every server to come up
+  local name=$1
+  shift
+  for p in "$@"; do
+    if ! wait_http "http://127.0.0.1:$p/health" 1800 "$VLLM_PID"; then
+      log "config $name failed to start"
+      echo "$name: failed to start" >>"$OUT/failed.txt"
+      stop_all
+      return 1
+    fi
+  done
+}
 
 # 1. DP+EP, ranks as endpoints.
 p0=$(free_port); p1=$(free_port)
 CUDA_VISIBLE_DEVICES=0 start_vllm "$OUT/vllm_rank0.log" "$p0" "$LOCAL" "${COMMON[@]}" --data-parallel-size 2 --data-parallel-rank 0 --enable-expert-parallel
 CUDA_VISIBLE_DEVICES=1 start_vllm "$OUT/vllm_rank1.log" "$p1" "$LOCAL" "${COMMON[@]}" --data-parallel-size 2 --data-parallel-rank 1 --enable-expert-parallel
-up "$p0"; up "$p1"
-gateway_for rank "http://127.0.0.1:$p0" "http://127.0.0.1:$p1"
-policy '{"policy":"least-load"}'; bench dp-ep-ranks-least-load
-policy '{"policy":"prefix-aware"}'; bench dp-ep-ranks-prefix-aware
-policy '{"policy":"prefix-aware","queue_saturation":8}'; bench dp-ep-ranks-prefix-aware-sat8
-stop_all
+if config_ok dp-ep-ranks "$p0" "$p1"; then
+  gateway_for rank "http://127.0.0.1:$p0" "http://127.0.0.1:$p1"
+  policy '{"policy":"least-load"}'; bench dp-ep-ranks-least-load
+  policy '{"policy":"prefix-aware"}'; bench dp-ep-ranks-prefix-aware
+  policy '{"policy":"prefix-aware","queue_saturation":8}'; bench dp-ep-ranks-prefix-aware-sat8
+  stop_all
+fi
 
 # 2. DP+EP behind vLLM's internal balancer (queue-based, not KV-aware).
 p=$(free_port)
 start_vllm "$OUT/vllm_internal.log" "$p" "$LOCAL" "${COMMON[@]}" --data-parallel-size 2 --enable-expert-parallel
-up "$p"; gateway_for internal "http://127.0.0.1:$p"; bench dp-ep-internal-lb; stop_all
+if config_ok dp-ep-internal "$p"; then
+  gateway_for internal "http://127.0.0.1:$p"; bench dp-ep-internal-lb; stop_all
+fi
 
 # 3. Tensor parallel.
 p=$(free_port)
 start_vllm "$OUT/vllm_tp2.log" "$p" "$LOCAL" "${COMMON[@]}" --tensor-parallel-size 2
-up "$p"; gateway_for tp "http://127.0.0.1:$p"; bench tp2; stop_all
+if config_ok tp2 "$p"; then
+  gateway_for tp "http://127.0.0.1:$p"; bench tp2; stop_all
+fi
 
-# 4. Two independent replicas.
+# 4. Two independent replicas (no collective communication at all).
 p0=$(free_port); p1=$(free_port)
 CUDA_VISIBLE_DEVICES=0 start_vllm "$OUT/vllm_r0.log" "$p0" "$LOCAL" "${COMMON[@]}"
 CUDA_VISIBLE_DEVICES=1 start_vllm "$OUT/vllm_r1.log" "$p1" "$LOCAL" "${COMMON[@]}"
-up "$p0"; up "$p1"
-gateway_for rep "http://127.0.0.1:$p0" "http://127.0.0.1:$p1"
-policy '{"policy":"prefix-aware"}'; bench replicas-prefix-aware
-stop_all
+if config_ok replicas "$p0" "$p1"; then
+  gateway_for rep "http://127.0.0.1:$p0" "http://127.0.0.1:$p1"
+  policy '{"policy":"least-load"}'; bench replicas-least-load
+  policy '{"policy":"prefix-aware"}'; bench replicas-prefix-aware
+  stop_all
+fi
 log "results in $OUT"

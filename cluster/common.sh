@@ -77,6 +77,14 @@ activate_env() {
   # DP ranks initialized. Jobs here stay within one node, where GPUs talk
   # over NVLink and need no network plugin.
   export NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
+  # Not enough: NCCL 2.28 initializes its built-in IB transport through the
+  # same plugin path, and it still crashed there. Single-node jobs use
+  # NVLink/P2P and do not need InfiniBand.
+  export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+  # Not enough: NCCL 2.28 initializes its built-in IB transport through the
+  # same plugin path, and it still crashed there. Single-node jobs use
+  # NVLink/P2P and do not need InfiniBand.
+  export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
   env | grep -E '^(NCCL_|UCX_)' | sort >&2 || true
 }
 
