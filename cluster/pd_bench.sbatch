@@ -22,21 +22,27 @@ stage_env
 PYTHON=$ENV_DIR/bin/python
 # Fail fast if the KV connector's transport cannot load.
 "$PYTHON" -P -c "import torch; from nixl._api import nixl_agent; print('nixl ok')" || { log "NIXL not importable"; exit 1; }
-# NIXL's UCX backend connects to itself when it starts; on these nodes that
-# failed over TCP (failure #23). Try UCX's default transports, then
-# same-node ones only, and keep the first set that starts.
+# NIXL's UCX backend connects to itself when it starts. On these nodes TCP to
+# the node's own address is refused (failure #23), and shared memory alone
+# is not enough: NIXL needs peer failure handling, which only network
+# transports have. Try candidates as TLS;NET_DEVICES and keep the first that
+# starts; prefill and decode share the node, so loopback TCP will do.
+ip -br addr >"$OUT/ucx-probe.txt" 2>&1 || true
 ucx_ok=
-for tls in default cuda_ipc,cuda_copy,sm,self; do
-  echo "== UCX_TLS=$tls" >>"$OUT/ucx-probe.txt"
+for cand in "default;default" "tcp,cuda_ipc,cuda_copy,sm,self;lo" "all;lo"; do
+  tls=${cand%%;*} dev=${cand#*;}
+  echo "== UCX_TLS=$tls UCX_NET_DEVICES=$dev" >>"$OUT/ucx-probe.txt"
   if ( [ "$tls" = default ] || export UCX_TLS=$tls
+    [ "$dev" = default ] || export UCX_NET_DEVICES=$dev
     "$PYTHON" -P -c "import torch; from nixl._api import nixl_agent, nixl_agent_config
 nixl_agent('probe', nixl_agent_config(backends=['UCX'])); print('ucx ok')" ) >>"$OUT/ucx-probe.txt" 2>&1; then
     [ "$tls" = default ] || export UCX_TLS=$tls
-    ucx_ok=$tls; break
+    [ "$dev" = default ] || export UCX_NET_DEVICES=$dev
+    ucx_ok=$cand; break
   fi
 done
 [ -n "$ucx_ok" ] || { log "NIXL UCX backend failed with every transport set; see $OUT/ucx-probe.txt"; exit 1; }
-log "NIXL UCX transports: $ucx_ok"
+log "NIXL UCX transports;devices: $ucx_ok"
 LOCAL=$(stage_model "$MODEL")
 COMMON=(--served-model-name "$MODEL" --max-model-len 16384 --enable-prompt-tokens-details)
 WORK=(-model "$MODEL" -requests "${REQUESTS:-400}" -concurrency "${CONCURRENCY:-16}" -groups "${PROMPT_GROUPS:-400}"
