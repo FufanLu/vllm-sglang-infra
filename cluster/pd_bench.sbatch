@@ -34,8 +34,9 @@ for cand in "default;default" "tcp,cuda_ipc,cuda_copy,sm,self;lo" "all;lo"; do
   echo "== UCX_TLS=$tls UCX_NET_DEVICES=$dev" >>"$OUT/ucx-probe.txt"
   if ( [ "$tls" = default ] || export UCX_TLS=$tls
     [ "$dev" = default ] || export UCX_NET_DEVICES=$dev
-    "$PYTHON" -P -c "import torch; from nixl._api import nixl_agent, nixl_agent_config
-nixl_agent('probe', nixl_agent_config(backends=['UCX'])); print('ucx ok')" ) >>"$OUT/ucx-probe.txt" 2>&1; then
+    # os._exit: the agent segfaults in teardown even after a good start.
+    "$PYTHON" -P -c "import os, torch; from nixl._api import nixl_agent, nixl_agent_config
+nixl_agent('probe', nixl_agent_config(backends=['UCX'])); print('ucx ok', flush=True); os._exit(0)" ) >>"$OUT/ucx-probe.txt" 2>&1; then
     [ "$tls" = default ] || export UCX_TLS=$tls
     [ "$dev" = default ] || export UCX_NET_DEVICES=$dev
     ucx_ok=$cand; break
