@@ -1,0 +1,8 @@
+listen: ":8080"
+scheduler:
+  policy: least-load
+backends:
+  - { name: sim-0, url: "http://sim-0:8000" }
+  - { name: sim-1, url: "http://sim-1:8000" }
+  - { name: sim-2, url: "http://sim-2:8000" }
+  - { name: sim-3, url: "http://sim-3:8000" }

@@ -1,0 +1,57 @@
+# Local stack without a GPU: the gateway in front of four simulated vLLM
+# replicas (llm-d-inference-sim), plus Prometheus and Grafana.
+#
+#   make up      # build and start
+#   make down
+#
+# The simulator mirrors vLLM's OpenAI API and its vllm:* metrics, and with
+# --enable-kvcache it models prefix-cache hits: cached prompt tokens skip the
+# per-token prefill time, which is what prefix-aware routing exploits.
+name: vsi-local
+
+x-sim: &sim
+  image: ghcr.io/llm-d/llm-d-inference-sim:v0.9.0
+  environment:
+    # Required by --enable-kvcache; it only names the KV-event topic.
+    POD_IP: 127.0.0.1
+  command: >-
+    --model qwen3-8b-sim --port 8000
+    --max-num-seqs 32 --max-model-len 8192
+    --latency-calculator per-token --prefill-overhead 20ms --prefill-time-per-token 1ms
+    --inter-token-latency 20ms
+    --enable-kvcache --kv-cache-size 2048 --block-size 16
+
+services:
+  sim-0: *sim
+  sim-1: *sim
+  sim-2: *sim
+  sim-3: *sim
+
+  gateway:
+    build:
+      context: ../..
+    command: ["-config", "/etc/vsi/gateway.yaml"]
+    environment:
+      VSI_ADMIN_TOKEN: local-dev-token
+    volumes:
+      - ./gateway.yaml:/etc/vsi/gateway.yaml:ro
+    ports:
+      - "8080:8080"
+    depends_on: [sim-0, sim-1, sim-2, sim-3]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"

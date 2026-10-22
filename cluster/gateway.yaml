@@ -1,0 +1,9 @@
+# Gateway config for the Slurm cluster. There are no static backends:
+# vllm_replica.sbatch jobs register through the admin API when they are up.
+listen: ":8080"
+scheduler:
+  policy: least-load
+health:
+  interval: 2s
+  timeout: 1s
+  failure_threshold: 2
