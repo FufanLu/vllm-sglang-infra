@@ -1,0 +1,29 @@
+# Adds Redis, PostgreSQL, and a fake external provider to the base stack and
+# runs the gateway with gateway-platform.yaml:
+#
+#   docker compose -f deploy/local/docker-compose.yaml -f deploy/local/docker-compose.platform.yaml up -d --build
+services:
+  gateway:
+    command: ["-config", "/etc/vsi/gateway-platform.yaml"]
+    environment:
+      CLOUD_API_KEY: demo-provider-key
+    depends_on: [sim-0, sim-1, sim-2, sim-3, redis, postgres, cloud]
+
+  redis:
+    image: redis:7-alpine
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: vsi
+      POSTGRES_DB: vsi
+    ports:
+      - "15432:5432"
+
+  # Stands in for a hosted API (for example a cloud provider's Qwen
+  # endpoint): it requires its own key and serves its own model name.
+  cloud:
+    build:
+      context: ../..
+    entrypoint: ["/usr/local/bin/fakeengine"]
+    command: ["-model", "provider-qwen", "-api-key", "demo-provider-key", "-ttft", "300ms", "-tpot", "15ms"]

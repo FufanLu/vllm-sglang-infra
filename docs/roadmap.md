@@ -21,7 +21,7 @@ result, not just code.
 
 **Exit:** race-detector test suite green; local stack serves streamed traffic.
 
-## M2 — Bring-up on Explorer H200
+## M2 — Bring-up on Explorer H200 🚧
 
 - Packed vLLM environment (vLLM 0.26.0, cu129) unpacked to node-local disk.
 - `check_gpu.sbatch`: cu129 runtime on driver 570, Triton compilation, a real
@@ -34,11 +34,14 @@ result, not just code.
 **Exit:** four H200 replicas behind the gateway; round-robin vs least-load
 baseline with P50/P99 TTFT, TPOT, throughput.
 
-## M3 — Prefix-aware routing 🚧
+## M3 — Prefix-aware routing ✅ (simulated; H200 run in M2)
 
 - ✅ Approximate: the gateway hashes prompt blocks and remembers which
   endpoint served each prefix (LRU, bounded). On simulated engines: hit rate
   39% → 80%, median TTFT 660 → 53 ms ([results](results/m3-prefix-routing-sim.md)).
+- ✅ Precise: KV-cache events over ZeroMQ feed an index keyed by chained
+  token-block hashes; prompts are tokenized by the engine. With two
+  gateways sharing a pool: 70% → 80% hit rate ([results](results/m3-precise-prefix-sim.md)).
 - Precise: subscribe to vLLM KV-cache events (ZMQ) and keep a global index of
   which blocks each endpoint holds.
 - Scorer combining prefix-match length with load, so affinity yields when an
@@ -47,7 +50,7 @@ baseline with P50/P99 TTFT, TPOT, throughput.
 **Exit:** on a shared-system-prompt and multi-turn workload, TTFT and
 prefix-cache hit rate vs least-load, approximate vs precise.
 
-## M4 — Tenancy and metering
+## M4 — Tenancy and metering ✅
 
 - API keys mapped to tenants; keys stored hashed.
 - Token quotas per tenant (Redis): reserve `prompt + max_tokens` up front,
@@ -59,7 +62,10 @@ prefix-cache hit rate vs least-load, approximate vs precise.
 **Exit:** quota enforcement under concurrent load; usage totals match engine
 token counts.
 
-## M5 — Cold start and Slurm autoscaling (D)
+## M5 — Cold start and Slurm autoscaling (D) 🚧
+
+Autoscaler done (Slurm, Kubernetes, and process providers; walltime
+handover; tested). Cold-start measurements need H200 time.
 
 - Measure ready time of a new replica under weight-staging strategies: NFS
   direct, sequential pre-read, copy to node-local NVMe, page-cache reuse.
@@ -92,7 +98,10 @@ walltime handover.
 
 **Exit:** hit rate and TTFT vs GPU-only caching as the working set grows.
 
-## M8 — Flow control (C)
+## M8 — Flow control (C) ✅
+
+On simulated engines: interactive TTFT p99 4768 → 293 ms under a batch
+flood ([results](results/c-flow-control-sim.md)).
 
 - Priority bands (interactive above batch), token-fair queuing across
   tenants within a band, request TTL.
@@ -102,7 +111,10 @@ walltime handover.
 **Exit:** interactive P99 TTFT under a batch flood, with and without flow
 control; per-tenant token share.
 
-## M9 — Prefill/decode disaggregation (B)
+## M9 — Prefill/decode disaggregation (B) 🚧
+
+Gateway orchestration done and tested (prefill with `do_remote_decode`,
+pass-through of `kv_transfer_params`, fallback). Needs the H200 run.
 
 - One prefill and one decode vLLM on two H200s of one node, KV over NIXL.
 - The gateway picks a prefill/decode pair per request and orchestrates the
@@ -110,12 +122,15 @@ control; per-tenant token share.
 
 **Exit:** TTFT and TPOT vs the same two GPUs serving aggregated.
 
-## M10 — Kubernetes
+## M10 — Kubernetes 🚧
+
+Pod discovery and Deployment scaling done and tested against a fake API
+server; Helm chart and kind demo in progress.
 
 - Helm chart for the gateway; kind demo with simulated engines.
 - Gateway in front of llm-d's router, injecting the tenant header.
 
-## M11 — Cloud overflow
+## M11 — Cloud overflow ✅
 
 - External OpenAI-compatible providers as a backend class with per-token cost.
 - Overflow when local replicas are saturated or absent; tenants marked

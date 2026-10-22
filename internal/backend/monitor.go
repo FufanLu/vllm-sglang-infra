@@ -62,9 +62,19 @@ func (m *Monitor) each(ctx context.Context, fn func(context.Context, *Endpoint))
 	wg.Wait()
 }
 
+// externalRetry is how long an external provider stays out of rotation after
+// a failure. Providers have no health endpoint, so it is simply retried.
+const externalRetry = 30 * time.Second
+
 // Check probes one endpoint. When it is healthy but its models are unknown,
 // Check also asks it which models it serves.
 func (m *Monitor) Check(ctx context.Context, ep *Endpoint) {
+	if ep.IsExternal() {
+		if d := ep.DownFor(); d > externalRetry && ep.RecordProbe(true, m.FailureThreshold) {
+			m.Log.Info("external provider back in rotation", "endpoint", ep.Name, "after", d.Round(time.Second).String())
+		}
+		return
+	}
 	err := m.get(ctx, ep, "/health", nil)
 	if ep.RecordProbe(err == nil, m.FailureThreshold) {
 		if err == nil {
@@ -101,6 +111,9 @@ func (m *Monitor) discoverModels(ctx context.Context, ep *Endpoint) {
 // Scrape reads one endpoint's /metrics. On failure the previous snapshot is
 // kept; scorers judge freshness by Snapshot.ScrapedAt.
 func (m *Monitor) Scrape(ctx context.Context, ep *Endpoint) {
+	if ep.IsExternal() {
+		return
+	}
 	inflight := ep.Inflight()
 	err := m.get(ctx, ep, "/metrics", func(body io.Reader) error {
 		samples, err := parsePromText(body)

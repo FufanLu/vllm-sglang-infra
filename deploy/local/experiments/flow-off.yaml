@@ -1,0 +1,21 @@
+# Flow-control experiment (off). See flow-control.sh.
+listen: ":8080"
+scheduler:
+  policy: least-load
+backends:
+  - { name: sim-0, url: "http://sim-0:8000" }
+  - { name: sim-1, url: "http://sim-1:8000" }
+  - { name: sim-2, url: "http://sim-2:8000" }
+  - { name: sim-3, url: "http://sim-3:8000" }
+tenancy:
+  tenants:
+    - name: chat
+      api_key_hashes: ["sha256:2855f5a290c15eeb6d23c3561dd9ab4a42bd039326b1ea129f4a7c77cbcf787d"] # chat-demo-key
+      priority: interactive
+    - name: batch
+      api_key_hashes: ["sha256:c24d8ebf7f8e82f25c2ab9174b974fe6757e740d10825b775ca8cd87d242aca9"] # batch-demo-key
+      priority: batch
+flow:
+  enabled: false
+  max_inflight_per_endpoint: 8   # matches the simulators' --max-num-seqs
+  batch_share: 0.75

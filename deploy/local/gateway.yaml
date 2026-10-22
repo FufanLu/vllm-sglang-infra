@@ -1,8 +1,10 @@
 listen: ":8080"
 scheduler:
   policy: least-load
+# kv_events: where each replica's KV-cache events can be subscribed to, for
+# the precise-prefix-aware policy. The simulators share kvrelay.
 backends:
-  - { name: sim-0, url: "http://sim-0:8000" }
-  - { name: sim-1, url: "http://sim-1:8000" }
-  - { name: sim-2, url: "http://sim-2:8000" }
-  - { name: sim-3, url: "http://sim-3:8000" }
+  - { name: sim-0, url: "http://sim-0:8000", labels: { kv_events: "tcp://kvrelay:5558" } }
+  - { name: sim-1, url: "http://sim-1:8000", labels: { kv_events: "tcp://kvrelay:5558" } }
+  - { name: sim-2, url: "http://sim-2:8000", labels: { kv_events: "tcp://kvrelay:5558" } }
+  - { name: sim-3, url: "http://sim-3:8000", labels: { kv_events: "tcp://kvrelay:5558" } }

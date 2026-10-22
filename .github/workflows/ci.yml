@@ -6,6 +6,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: vsi
+          POSTGRES_DB: vsi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      VSI_TEST_REDIS_URL: redis://localhost:6379/0
+      VSI_TEST_POSTGRES_DSN: postgres://postgres:vsi@localhost:5432/vsi?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

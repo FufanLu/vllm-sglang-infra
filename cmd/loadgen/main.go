@@ -27,7 +27,7 @@ import (
 )
 
 type config struct {
-	url, model, label      string
+	url, model, label, key string
 	requests, warmup       int
 	concurrency            int
 	rate                   float64
@@ -49,9 +49,10 @@ type result struct {
 
 func main() {
 	var c config
-	flag.StringVar(&c.url, "url", "http://localhost:8080", "gateway or engine base URL")
+	flag.StringVar(&c.url, "url", "http://localhost:8080", "gateway or engine base URL; several, comma-separated, are used in turn")
 	flag.StringVar(&c.model, "model", "qwen3-8b-sim", "model name")
 	flag.StringVar(&c.label, "label", "", "label for the summary (e.g. the policy under test)")
+	flag.StringVar(&c.key, "api-key", "", "tenant API key sent as a bearer token")
 	flag.IntVar(&c.requests, "requests", 400, "requests to send")
 	flag.IntVar(&c.warmup, "warmup", 0, "leading requests excluded from the statistics")
 	flag.IntVar(&c.concurrency, "concurrency", 16, "requests in flight (closed loop)")
@@ -74,7 +75,8 @@ func main() {
 	bodies := buildRequests(c)
 	client := &http.Client{Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 1024, DisableCompression: true}}
 	start := time.Now()
-	results := run(c, client, bodies)
+	urls := strings.Split(c.url, ",")
+	results := run(c, client, bodies, urls)
 	report(c, results, time.Since(start))
 }
 
@@ -122,13 +124,15 @@ func buildRequests(c config) [][]byte {
 	return bodies
 }
 
-func run(c config, client *http.Client, bodies [][]byte) []result {
+func run(c config, client *http.Client, bodies [][]byte, urls []string) []result {
 	results := make([]result, len(bodies))
 	var wg sync.WaitGroup
+	// Request i always goes to the same URL, so runs are comparable.
+	url := func(i int) string { return strings.TrimSpace(urls[i%len(urls)]) }
 	if c.rate > 0 {
 		rng := rand.New(rand.NewPCG(c.seed, 0xa441))
 		for i := range bodies {
-			wg.Go(func() { results[i] = send(c, client, bodies[i]) })
+			wg.Go(func() { results[i] = send(c, client, url(i), bodies[i]) })
 			time.Sleep(time.Duration(rng.ExpFloat64() / c.rate * float64(time.Second)))
 		}
 	} else {
@@ -136,7 +140,7 @@ func run(c config, client *http.Client, bodies [][]byte) []result {
 		for range c.concurrency {
 			wg.Go(func() {
 				for i := range next {
-					results[i] = send(c, client, bodies[i])
+					results[i] = send(c, client, url(i), bodies[i])
 				}
 			})
 		}
@@ -149,12 +153,15 @@ func run(c config, client *http.Client, bodies [][]byte) []result {
 	return results
 }
 
-func send(c config, client *http.Client, body []byte) result {
+func send(c config, client *http.Client, base string, body []byte) result {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 	t0 := time.Now()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.url+"/v1/chat/completions", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if c.key != "" {
+		req.Header.Set("Authorization", "Bearer "+c.key)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return result{err: err}

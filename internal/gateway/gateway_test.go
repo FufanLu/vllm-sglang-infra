@@ -52,7 +52,7 @@ func newHarness(t *testing.T, policy string, engines map[string]fakeengine.Confi
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(Options{Registry: h.reg, Scheduler: sched, Metrics: metrics.New(h.reg), Client: &http.Client{},
+	s := New(Options{Registry: h.reg, Scheduler: sched, Metrics: metrics.New(h.reg, nil), Client: &http.Client{},
 		Log: log, MaxRetries: 2, MaxBodyBytes: 1 << 20, AdminToken: "tok"})
 	h.gw = httptest.NewServer(s.Handler())
 	t.Cleanup(h.gw.Close)
@@ -117,7 +117,7 @@ func TestNonStreamingRelay(t *testing.T) {
 	defer resp.Body.Close()
 	var body struct {
 		Choices []struct{ Text string } `json:"choices"`
-		Usage   usage                   `json:"usage"`
+		Usage   usageInfo               `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("status %d, decode err %v", resp.StatusCode, err)

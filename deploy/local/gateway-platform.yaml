@@ -1,0 +1,49 @@
+# The full platform on the laptop: tenants with API keys and token budgets
+# (Redis), usage metering (PostgreSQL), flow control, and overflow to an
+# external provider. Used with docker-compose.platform.yaml.
+#
+# Demo keys (never use these anywhere real):
+#   support-demo-key  interactive, 200k tokens/min
+#   etl-demo-key      batch, 2M tokens/min
+#   bank-demo-key     interactive, on-prem only (never overflows)
+listen: ":8080"
+scheduler:
+  policy: prefix-aware
+backends:
+  - { name: sim-0, url: "http://sim-0:8000" }
+  - { name: sim-1, url: "http://sim-1:8000" }
+  - { name: sim-2, url: "http://sim-2:8000" }
+  - { name: sim-3, url: "http://sim-3:8000" }
+  - name: cloud
+    kind: external
+    url: "http://cloud:8000/v1"
+    api_key_env: CLOUD_API_KEY
+    models: { qwen3-8b-sim: provider-qwen }
+    price_input: 0.30   # USD per million tokens, illustrative
+    price_output: 1.20
+    max_inflight: 64
+tenancy:
+  tenants:
+    - name: support
+      api_key_hashes: ["sha256:18c498964cd65c5c38b44572dc61736bc213007348421df36a38331968e0bed2"]
+      priority: interactive
+      tokens_per_minute: 200000
+    - name: etl
+      api_key_hashes: ["sha256:90c439e9ef61ae49eb07bd9a3de9a0c1a9e311468e6aa2e171ccc2599e435340"]
+      priority: batch
+      tokens_per_minute: 2000000
+    - name: bank
+      api_key_hashes: ["sha256:09c4397a438ef207e50e80abf1ae5c34aee081f83982e581c4647c88dadd3d23"]
+      priority: interactive
+      tokens_per_minute: 200000
+      on_prem_only: true
+quota:
+  store: redis
+  redis_url: "redis://redis:6379/0"
+usage:
+  sink: postgres
+  postgres_dsn: "postgres://postgres:vsi@postgres:5432/vsi?sslmode=disable"
+flow:
+  enabled: true
+  max_inflight_per_endpoint: 16
+  batch_share: 0.75

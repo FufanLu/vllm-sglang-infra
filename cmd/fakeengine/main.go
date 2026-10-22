@@ -18,9 +18,10 @@ func main() {
 	tpot := flag.Duration("tpot", 20*time.Millisecond, "time per output token after the first")
 	tokens := flag.Int("tokens", 32, "completion tokens when the request sets no max_tokens")
 	kv := flag.Int("kv-capacity", 64, "concurrent requests that fill the simulated KV cache")
+	apiKey := flag.String("api-key", "", "require this bearer token, as an external provider would")
 	flag.Parse()
 
-	e := fakeengine.New(fakeengine.Config{Model: *model, TTFT: *ttft, TPOT: *tpot, Tokens: *tokens, KVCapacity: *kv})
+	e := fakeengine.New(fakeengine.Config{Model: *model, TTFT: *ttft, TPOT: *tpot, Tokens: *tokens, KVCapacity: *kv, APIKey: *apiKey})
 	log.Printf("fakeengine serving %q on %s", *model, *addr)
 	srv := &http.Server{Addr: *addr, Handler: e.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())

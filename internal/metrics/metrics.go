@@ -20,9 +20,22 @@ type Metrics struct {
 	Tokens   *prometheus.CounterVec   // backend, kind=prompt|completion
 	Retries  *prometheus.CounterVec   // reason
 	Picks    *prometheus.CounterVec   // policy, backend
+
+	TenantRequests  *prometheus.CounterVec   // tenant, code
+	TenantTokens    *prometheus.CounterVec   // tenant, kind
+	QuotaRejections *prometheus.CounterVec   // tenant
+	FlowWait        *prometheus.HistogramVec // band
+	FlowRejections  *prometheus.CounterVec   // band, reason
+	Overflow        *prometheus.CounterVec   // reason
+	PDPrefill       *prometheus.HistogramVec // backend
+	Tokenize        *prometheus.HistogramVec // ok
 }
 
-func New(reg *backend.Registry) *Metrics {
+// FlowStats reports flow control's in-flight and queued counts per band
+// (index 0 batch, 1 interactive).
+type FlowStats func() (inflight, queued [2]int)
+
+func New(reg *backend.Registry, flow FlowStats) *Metrics {
 	m := &Metrics{
 		Registry: prometheus.NewRegistry(),
 		Requests: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -56,14 +69,72 @@ func New(reg *backend.Registry) *Metrics {
 			Name: "vsi_scheduler_picks_total",
 			Help: "Scheduling decisions by policy and chosen backend.",
 		}, []string{"policy", "backend"}),
+		TenantRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vsi_tenant_requests_total",
+			Help: "Requests by tenant and outcome.",
+		}, []string{"tenant", "code"}),
+		TenantTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vsi_tenant_tokens_total",
+			Help: "Tokens served per tenant, by kind (prompt, completion).",
+		}, []string{"tenant", "kind"}),
+		QuotaRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vsi_quota_rejections_total",
+			Help: "Requests refused because the tenant's token budget was exhausted.",
+		}, []string{"tenant"}),
+		FlowWait: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "vsi_flow_wait_seconds",
+			Help:    "Time requests waited in flow control before dispatch.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 4, 10), // 1ms .. ~4min
+		}, []string{"band"}),
+		FlowRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vsi_flow_rejections_total",
+			Help: "Requests flow control turned away, by band and reason.",
+		}, []string{"band", "reason"}),
+		Overflow: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "vsi_overflow_total",
+			Help: "Requests sent to external providers, by reason.",
+		}, []string{"reason"}),
+		PDPrefill: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "vsi_pd_prefill_seconds",
+			Help:    "Duration of the prefill phase of disaggregated requests.",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
+		}, []string{"backend"}),
+		Tokenize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "vsi_tokenize_seconds",
+			Help:    "Time to fetch prompt token IDs from an engine, by success.",
+			Buckets: prometheus.ExponentialBuckets(0.0005, 2, 12),
+		}, []string{"ok"}),
 	}
 	m.Registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.Requests, m.Duration, m.TTFT, m.TPOT, m.Tokens, m.Retries, m.Picks,
+		m.TenantRequests, m.TenantTokens, m.QuotaRejections, m.FlowWait, m.FlowRejections, m.Overflow, m.PDPrefill, m.Tokenize,
 		newBackendCollector(reg),
 	)
+	if flow != nil {
+		m.Registry.MustRegister(&flowCollector{
+			stats:    flow,
+			inflight: prometheus.NewDesc("vsi_flow_inflight", "Requests dispatched and not finished, by band.", []string{"band"}, nil),
+			queued:   prometheus.NewDesc("vsi_flow_queued", "Requests waiting in flow control, by band.", []string{"band"}, nil),
+		})
+	}
 	return m
+}
+
+type flowCollector struct {
+	stats            FlowStats
+	inflight, queued *prometheus.Desc
+}
+
+func (c *flowCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.inflight; ch <- c.queued }
+
+func (c *flowCollector) Collect(ch chan<- prometheus.Metric) {
+	in, q := c.stats()
+	for band, name := range []string{"batch", "interactive"} {
+		ch <- prometheus.MustNewConstMetric(c.inflight, prometheus.GaugeValue, float64(in[band]), name)
+		ch <- prometheus.MustNewConstMetric(c.queued, prometheus.GaugeValue, float64(q[band]), name)
+	}
 }
 
 // backendCollector reads endpoint state at scrape time, so endpoints removed
@@ -108,5 +179,37 @@ func (c *backendCollector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.waiting, prometheus.GaugeValue, s.Waiting, labels...)
 			ch <- prometheus.MustNewConstMetric(c.kvUse, prometheus.GaugeValue, s.KVUsage, labels...)
 		}
+	}
+}
+
+// KVIndexStats reports, for an endpoint, the blocks the precise index holds
+// on GPU and CPU and the stored blocks it could not chain.
+type KVIndexStats func(ep *backend.Endpoint) (gpu, cpu, orphans int)
+
+// RegisterKVIndex exposes the precise KV index's view of each endpoint.
+func (m *Metrics) RegisterKVIndex(reg *backend.Registry, stats KVIndexStats) {
+	m.Registry.MustRegister(&kvIndexCollector{reg: reg, stats: stats,
+		blocks:  prometheus.NewDesc("vsi_kvindex_blocks", "KV blocks the precise index believes an endpoint holds, by tier.", []string{"backend", "tier"}, nil),
+		orphans: prometheus.NewDesc("vsi_kvindex_orphan_blocks", "Stored blocks whose parent was never seen (missed events).", []string{"backend"}, nil),
+	})
+}
+
+type kvIndexCollector struct {
+	reg             *backend.Registry
+	stats           KVIndexStats
+	blocks, orphans *prometheus.Desc
+}
+
+func (c *kvIndexCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.blocks; ch <- c.orphans }
+
+func (c *kvIndexCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, ep := range c.reg.List() {
+		if ep.Label("kv_events") == "" {
+			continue
+		}
+		gpu, cpu, orphans := c.stats(ep)
+		ch <- prometheus.MustNewConstMetric(c.blocks, prometheus.GaugeValue, float64(gpu), ep.Name, "gpu")
+		ch <- prometheus.MustNewConstMetric(c.blocks, prometheus.GaugeValue, float64(cpu), ep.Name, "cpu")
+		ch <- prometheus.MustNewConstMetric(c.orphans, prometheus.GaugeValue, float64(orphans), ep.Name)
 	}
 }

@@ -1,0 +1,15 @@
+# A second gateway in front of the same replicas, as in a highly available
+# deployment. Used by experiments/precise-prefix.sh.
+services:
+  gateway-b:
+    build:
+      context: ../..
+    command: ["-config", "/etc/vsi/${VSI_GATEWAY_CONFIG:-gateway.yaml}"]
+    environment:
+      VSI_ADMIN_TOKEN: local-dev-token
+      VSI_SCHEDULER_POLICY: ${VSI_SCHEDULER_POLICY:-}
+    volumes:
+      - ./:/etc/vsi:ro
+    ports:
+      - "8081:8080"
+    depends_on: [sim-0, sim-1, sim-2, sim-3]

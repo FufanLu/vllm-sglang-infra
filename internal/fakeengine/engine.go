@@ -6,11 +6,14 @@
 package fakeengine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -21,6 +24,9 @@ type Config struct {
 	TPOT       time.Duration // delay between later tokens
 	Tokens     int           // completion length when the request sets no max_tokens
 	KVCapacity int           // concurrent requests that fill the KV cache
+	// APIKey, if set, is required as a bearer token, as an external
+	// provider would.
+	APIKey string
 }
 
 type Engine struct {
@@ -28,7 +34,23 @@ type Engine struct {
 	running    atomic.Int64
 	served     atomic.Int64
 	failStatus atomic.Int64
+	resets     atomic.Int64
+
+	mu         sync.Mutex
+	lastHeader http.Header
+	lastBody   map[string]any
 }
+
+// LastRequest returns the headers and decoded body of the most recent
+// completion request.
+func (e *Engine) LastRequest() (http.Header, map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lastHeader, e.lastBody
+}
+
+// Resets counts POST /reset_prefix_cache calls.
+func (e *Engine) Resets() int64 { return e.resets.Load() }
 
 func New(cfg Config) *Engine {
 	if cfg.Tokens <= 0 {
@@ -57,6 +79,7 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", e.metrics)
 	mux.HandleFunc("POST /v1/chat/completions", e.complete(true))
 	mux.HandleFunc("POST /v1/completions", e.complete(false))
+	mux.HandleFunc("POST /reset_prefix_cache", func(w http.ResponseWriter, _ *http.Request) { e.resets.Add(1) })
 	return mux
 }
 
@@ -85,6 +108,10 @@ type request struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
+	KVTransferParams *struct {
+		DoRemoteDecode  bool `json:"do_remote_decode"`
+		DoRemotePrefill bool `json:"do_remote_prefill"`
+	} `json:"kv_transfer_params"`
 	Messages []struct {
 		Content any `json:"content"`
 	} `json:"messages"`
@@ -105,11 +132,21 @@ func (e *Engine) complete(chat bool) http.HandlerFunc {
 			httpError(w, code, "injected failure")
 			return
 		}
+		if e.cfg.APIKey != "" && r.Header.Get("Authorization") != "Bearer "+e.cfg.APIKey {
+			httpError(w, http.StatusUnauthorized, "invalid API key")
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
 		var req request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(raw, &req); err != nil {
 			httpError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
+		var generic map[string]any
+		json.NewDecoder(bytes.NewReader(raw)).Decode(&generic)
+		e.mu.Lock()
+		e.lastHeader, e.lastBody = r.Header.Clone(), generic
+		e.mu.Unlock()
 		if req.Model != e.cfg.Model {
 			httpError(w, http.StatusNotFound, fmt.Sprintf("The model `%s` does not exist.", req.Model))
 			return
@@ -124,6 +161,18 @@ func (e *Engine) complete(chat bool) http.HandlerFunc {
 
 		ctx := r.Context()
 		if !sleep(ctx, e.cfg.TTFT) {
+			return
+		}
+		if p := req.KVTransferParams; p != nil && p.DoRemoteDecode {
+			// Prefill for a remote decoder, as vLLM's NixlConnector does: keep
+			// the KV and say where to fetch it.
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": "fake-prefill", "object": "chat.completion", "model": e.cfg.Model,
+				"choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": "tok"}}},
+				"usage":   map[string]int{"prompt_tokens": req.promptTokens(), "completion_tokens": 1},
+				"kv_transfer_params": map[string]any{"do_remote_prefill": true, "do_remote_decode": false,
+					"remote_engine_id": "fake-" + e.cfg.Model, "remote_request_id": "r1",
+					"remote_block_ids": []int{1, 2, 3}, "remote_host": "127.0.0.1", "remote_port": 5600}})
 			return
 		}
 		u := map[string]int{"prompt_tokens": req.promptTokens(), "completion_tokens": n, "total_tokens": req.promptTokens() + n}

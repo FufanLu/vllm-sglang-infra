@@ -8,10 +8,31 @@ import (
 // inferenceRequest holds the fields of an OpenAI-style request body that the
 // gateway reads. The body itself is forwarded byte for byte.
 type inferenceRequest struct {
-	Model    string          `json:"model"`
-	Stream   bool            `json:"stream"`
-	Messages []chatMessage   `json:"messages"` // /v1/chat/completions
-	Prompt   json.RawMessage `json:"prompt"`   // /v1/completions
+	Model         string          `json:"model"`
+	Stream        bool            `json:"stream"`
+	StreamOptions *streamOptions  `json:"stream_options"`
+	MaxTokens     *int64          `json:"max_tokens"`
+	MaxCompletion *int64          `json:"max_completion_tokens"`
+	Messages      []chatMessage   `json:"messages"` // /v1/chat/completions
+	Prompt        json.RawMessage `json:"prompt"`   // /v1/completions
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// estimateTokens is what the request is reserved against its tenant's quota
+// before the engine reports actual usage: about four characters per prompt
+// token, plus the requested output length (or def when none is given).
+func (r *inferenceRequest) estimateTokens(def int) int64 {
+	out := int64(def)
+	switch {
+	case r.MaxCompletion != nil && *r.MaxCompletion > 0:
+		out = *r.MaxCompletion
+	case r.MaxTokens != nil && *r.MaxTokens > 0:
+		out = *r.MaxTokens
+	}
+	return int64(len(r.promptText()))/4 + out
 }
 
 type chatMessage struct {

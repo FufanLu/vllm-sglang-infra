@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/FufanLu/vllm-sglang-infra/internal/backend"
+	"github.com/FufanLu/vllm-sglang-infra/internal/kvindex"
 	"github.com/FufanLu/vllm-sglang-infra/internal/prefix"
 )
 
@@ -33,6 +34,59 @@ func (ModelFilter) Name() string { return "model" }
 
 func (ModelFilter) Filter(req *Request, eps []*backend.Endpoint) []*backend.Endpoint {
 	return keep(eps, func(e *backend.Endpoint) bool { return e.Serves(req.Model) })
+}
+
+// RoleFilter keeps endpoints whose role label matches the request: prefill
+// or decode for a disaggregated pool, and for an ordinary request endpoints
+// with no role (or role "both").
+type RoleFilter struct{}
+
+func (RoleFilter) Name() string { return "role" }
+
+func (RoleFilter) Filter(req *Request, eps []*backend.Endpoint) []*backend.Endpoint {
+	return keep(eps, func(e *backend.Endpoint) bool {
+		role := e.Label("role")
+		if req.Role == "" {
+			return role == "" || role == "both"
+		}
+		return role == req.Role || role == "both"
+	})
+}
+
+// PlacementFilter decides between the cluster and external providers.
+// Local endpoints are preferred while any of them has room (in-flight below
+// Saturation); when all are full the request overflows to external
+// providers that have room, if the tenant allows it. Without such a
+// provider the request stays local and waits in an engine queue.
+type PlacementFilter struct {
+	Saturation int
+}
+
+func (PlacementFilter) Name() string { return "placement" }
+
+func (p PlacementFilter) Filter(req *Request, eps []*backend.Endpoint) []*backend.Endpoint {
+	var local, external []*backend.Endpoint
+	for _, e := range eps {
+		if e.IsExternal() {
+			if req.AllowExternal && req.Placement != LocalOnly && e.Inflight() < int64(max(e.External.MaxInflight, 1)) {
+				external = append(external, e)
+			}
+		} else if req.Placement != ExternalOnly {
+			local = append(local, e)
+		}
+	}
+	if req.Placement == ExternalOnly || len(external) == 0 {
+		if req.Placement == ExternalOnly {
+			return external
+		}
+		return local
+	}
+	for _, e := range local {
+		if e.Inflight() < int64(p.Saturation) {
+			return local
+		}
+	}
+	return external
 }
 
 func keep(eps []*backend.Endpoint, ok func(*backend.Endpoint) bool) []*backend.Endpoint {
@@ -105,20 +159,75 @@ func (p *PrefixScorer) Score(req *Request, eps []*backend.Endpoint) []float64 {
 		return out
 	}
 	for i, e := range eps {
-		out[i] = float64(p.Index.Match(endpointKey(e), hs)) / float64(len(hs))
+		out[i] = float64(p.Index.Match(EndpointKey(e), hs)) / float64(len(hs))
 	}
 	return out
 }
 
 func (p *PrefixScorer) Picked(req *Request, ep *backend.Endpoint) {
-	p.Index.Record(endpointKey(ep), req.blockHashes(p.Index))
+	p.Index.Record(EndpointKey(ep), req.blockHashes(p.Index))
 }
 
-// endpointKey identifies an endpoint's cache. It includes the URL so that a
-// replica re-registered under the same name on another node starts empty.
-func endpointKey(e *backend.Endpoint) string {
+// EndpointKey identifies an endpoint's cache in the prefix indexes. It
+// includes the URL so that a replica re-registered under the same name on
+// another node starts empty.
+func EndpointKey(e *backend.Endpoint) string {
 	return e.Name + "@" + e.URL.String()
 }
+
+// PrecisePrefixScorer scores endpoints by the KV blocks they actually hold,
+// from the engines' KV-cache events, matched against the request's token
+// IDs. Blocks in a slower tier (offloaded to CPU) count CPUWeight each, since
+// fetching them is cheaper than recomputing but not free.
+//
+// Events trail the engine by up to a flush interval, so a burst of requests
+// with a new prefix would scatter before any event arrives. Recent, a small
+// approximate index of where this scorer just sent each prefix, bridges that
+// gap; the score is the better of the two.
+type PrecisePrefixScorer struct {
+	Index     *kvindex.Index
+	Recent    *prefix.Index
+	CPUWeight float64
+}
+
+func (*PrecisePrefixScorer) Name() string      { return "precise-prefix" }
+func (*PrecisePrefixScorer) NeedsTokens() bool { return true }
+
+func (p *PrecisePrefixScorer) Score(req *Request, eps []*backend.Endpoint) []float64 {
+	out := make([]float64, len(eps))
+	if len(req.Tokens) == 0 {
+		return out
+	}
+	for i, e := range eps {
+		key := EndpointKey(e)
+		bs := p.Index.BlockSize(key)
+		if bs == 0 {
+			bs = defaultBlockTokens
+		}
+		hs := req.tokenHashes(bs)
+		if len(hs) == 0 {
+			continue
+		}
+		gpu, any := p.Index.Match(key, hs)
+		exact := (float64(gpu) + p.CPUWeight*float64(any-gpu)) / float64(len(hs))
+		recent := float64(p.Recent.Match(key, hs)) / float64(len(hs))
+		out[i] = max(exact, recent)
+	}
+	return out
+}
+
+func (p *PrecisePrefixScorer) Picked(req *Request, ep *backend.Endpoint) {
+	key := EndpointKey(ep)
+	bs := p.Index.BlockSize(key)
+	if bs == 0 {
+		bs = defaultBlockTokens
+	}
+	p.Recent.Record(key, req.tokenHashes(bs))
+}
+
+// defaultBlockTokens is vLLM's default block size, used until an endpoint's
+// events report its own.
+const defaultBlockTokens = 16
 
 // KVUsageScorer steers traffic away from endpoints whose KV cache is nearly
 // full, since a full cache forces the engine to queue or preempt. Below

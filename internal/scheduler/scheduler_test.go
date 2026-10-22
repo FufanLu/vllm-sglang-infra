@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/FufanLu/vllm-sglang-infra/internal/backend"
+	"github.com/FufanLu/vllm-sglang-infra/internal/kvevents"
+	"github.com/FufanLu/vllm-sglang-infra/internal/kvindex"
 )
 
 // endpoints builds n healthy endpoints named e0..e{n-1}.
@@ -234,5 +236,54 @@ func TestShortPromptsFallBackToLoad(t *testing.T) {
 	b, _ := s.Schedule(&Request{Prompt: "hi"}, eps, nil)
 	if a == b {
 		t.Error("without a cacheable prefix, concurrent requests should spread by load")
+	}
+}
+
+func TestPrecisePrefixFollowsEngineEvents(t *testing.T) {
+	eps := endpoints(t, 3)
+	ix := kvindex.New()
+	s, err := New("precise-prefix-aware", Options{KVIndex: ix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := make([]uint32, 64) // four 16-token blocks
+	for i := range tokens {
+		tokens[i] = uint32(1000 + i)
+	}
+	// Endpoint e2 reports, through its events, that it holds the first three
+	// blocks; e1 holds them only in its CPU tier.
+	ev := func(medium string) kvevents.Batch {
+		return kvevents.Batch{Events: []kvevents.Event{{Type: kvevents.BlockStored,
+			BlockHashes: []string{"a", "b", "c"}, TokenIDs: tokens[:48], BlockSize: 16, Medium: medium}}}
+	}
+	ix.Apply(EndpointKey(eps[2]), ev("GPU"))
+	ix.Apply(EndpointKey(eps[1]), ev("CPU"))
+
+	sc := s.Scorers[0].Scorer
+	got := sc.Score(&Request{Tokens: tokens}, eps)
+	if got[2] != 0.75 || got[1] != 0.375 || got[0] != 0 {
+		t.Errorf("scores %v, want [0 0.375 0.75]: GPU blocks count 1, CPU-only blocks 0.5", got)
+	}
+	ep, _ := s.Schedule(&Request{Tokens: tokens}, eps, nil)
+	if ep != eps[2] {
+		t.Errorf("picked %s, want e2 which holds the prefix on GPU", ep.Name)
+	}
+	if !s.NeedsTokens() {
+		t.Error("precise policy must ask for tokens")
+	}
+	// A request with a prefix no engine has reported yet sticks to where the
+	// scorer just sent it (the recent-picks bridge), before events arrive.
+	other := make([]uint32, 64)
+	first, _ := s.Schedule(&Request{Tokens: other}, eps, nil)
+	first.Release()
+	again, _ := s.Schedule(&Request{Tokens: other}, eps, nil)
+	if again != first {
+		t.Errorf("follow-up went to %s, first to %s", again.Name, first.Name)
+	}
+}
+
+func TestPrecisePolicyNeedsIndex(t *testing.T) {
+	if _, err := New("precise-prefix-aware", Options{}); err == nil {
+		t.Error("precise policy built without a KV index")
 	}
 }

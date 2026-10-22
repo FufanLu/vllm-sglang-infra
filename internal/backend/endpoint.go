@@ -72,12 +72,49 @@ func (s Snapshot) ExternalLoad() float64 {
 	return max(0, s.Running+s.Waiting-float64(s.GatewayInflight))
 }
 
-// Endpoint is one routable model-server instance: a vLLM or SGLang replica,
-// or a single data-parallel rank of one.
+// Kind separates the cluster's own model servers from external providers.
+type Kind string
+
+const (
+	KindLocal    Kind = "local"
+	KindExternal Kind = "external"
+)
+
+// External describes an OpenAI-compatible provider outside the cluster,
+// used for overflow when local capacity runs out.
+type External struct {
+	APIKey string
+	// Models maps gateway model names to the provider's names; only these
+	// models are served by the provider.
+	Models      map[string]string
+	PriceInput  float64 // USD per million prompt tokens
+	PriceOutput float64 // USD per million completion tokens
+	MaxInflight int
+}
+
+// Cost is the price of a request with the given token counts.
+func (x *External) Cost(prompt, completion int) float64 {
+	return (float64(prompt)*x.PriceInput + float64(completion)*x.PriceOutput) / 1e6
+}
+
+// Spec is everything needed to register an endpoint.
+type Spec struct {
+	Name     string
+	URL      string
+	Engine   Engine
+	Labels   map[string]string
+	Kind     Kind      // empty means local
+	External *External // set for KindExternal
+}
+
+// Endpoint is one routable model server: a vLLM or SGLang replica, a single
+// data-parallel rank of one, or an external provider.
 type Endpoint struct {
-	Name   string
-	URL    *url.URL
-	Engine Engine
+	Name     string
+	URL      *url.URL
+	Engine   Engine
+	Kind     Kind
+	External *External
 
 	inflight atomic.Int64
 
@@ -85,8 +122,19 @@ type Endpoint struct {
 	labels   map[string]string
 	healthy  bool
 	failures int
+	downAt   time.Time
 	models   []string
 	snap     Snapshot
+}
+
+// IsExternal reports whether the endpoint is an external provider.
+func (e *Endpoint) IsExternal() bool { return e.Kind == KindExternal }
+
+// Label returns one label value.
+func (e *Endpoint) Label(key string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.labels[key]
 }
 
 // Inflight is the number of requests the gateway has sent to this endpoint
@@ -125,12 +173,27 @@ func (e *Endpoint) Models() []string {
 	return slices.Clone(e.models)
 }
 
-// Serves reports whether the endpoint serves model. An endpoint whose models
-// are not known yet is assumed to serve everything.
+// Serves reports whether the endpoint serves model. A local endpoint whose
+// models are not known yet is assumed to serve everything; an external one
+// serves exactly the models it maps.
 func (e *Endpoint) Serves(model string) bool {
+	if e.IsExternal() {
+		_, ok := e.External.Models[model]
+		return ok
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return model == "" || len(e.models) == 0 || slices.Contains(e.models, model)
+}
+
+// DownFor is how long the endpoint has been marked down; zero if healthy.
+func (e *Endpoint) DownFor() time.Duration {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.healthy || e.downAt.IsZero() {
+		return 0
+	}
+	return time.Since(e.downAt)
 }
 
 // RecordProbe applies the result of an active health probe. The endpoint
@@ -149,6 +212,9 @@ func (e *Endpoint) RecordProbe(ok bool, threshold int) bool {
 			e.healthy = false
 		}
 	}
+	if was && !e.healthy {
+		e.downAt = time.Now()
+	}
 	return was != e.healthy
 }
 
@@ -160,6 +226,9 @@ func (e *Endpoint) MarkDown() bool {
 	defer e.mu.Unlock()
 	was := e.healthy
 	e.healthy = false
+	if was {
+		e.downAt = time.Now()
+	}
 	return was
 }
 
@@ -189,28 +258,41 @@ func NewRegistry() *Registry {
 	return &Registry{eps: make(map[string]*Endpoint)}
 }
 
-// Upsert adds an endpoint, or updates the one with the same name. If the URL
-// and engine are unchanged only the labels are updated and runtime state is
-// kept. Otherwise the endpoint is replaced and starts unhealthy, so a
-// re-registered replica gets traffic only after it passes a probe.
+// Upsert adds a local endpoint, or updates the one with the same name.
 func (r *Registry) Upsert(name, rawURL string, engine Engine, labels map[string]string) (*Endpoint, error) {
-	if name == "" {
+	return r.UpsertSpec(Spec{Name: name, URL: rawURL, Engine: engine, Labels: labels})
+}
+
+// UpsertSpec adds an endpoint, or updates the one with the same name. If the
+// URL, engine, and kind are unchanged only the labels are updated and runtime
+// state is kept. Otherwise the endpoint is replaced; a local one then starts
+// unhealthy, so a re-registered replica gets traffic only after it passes a
+// probe. External providers have no health endpoint and start healthy.
+func (r *Registry) UpsertSpec(spec Spec) (*Endpoint, error) {
+	if spec.Name == "" {
 		return nil, fmt.Errorf("endpoint name is empty")
 	}
-	u, err := ParseURL(rawURL)
+	if spec.Kind == "" {
+		spec.Kind = KindLocal
+	}
+	if spec.Kind == KindExternal && spec.External == nil {
+		return nil, fmt.Errorf("external endpoint %s has no provider settings", spec.Name)
+	}
+	u, err := ParseURL(spec.URL)
 	if err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cur, ok := r.eps[name]; ok && cur.URL.String() == u.String() && cur.Engine == engine {
+	if cur, ok := r.eps[spec.Name]; ok && cur.URL.String() == u.String() && cur.Engine == spec.Engine && cur.Kind == spec.Kind {
 		cur.mu.Lock()
-		cur.labels = maps.Clone(labels)
+		cur.labels = maps.Clone(spec.Labels)
 		cur.mu.Unlock()
 		return cur, nil
 	}
-	ep := &Endpoint{Name: name, URL: u, Engine: engine, labels: maps.Clone(labels)}
-	r.eps[name] = ep
+	ep := &Endpoint{Name: spec.Name, URL: u, Engine: spec.Engine, Kind: spec.Kind, External: spec.External,
+		labels: maps.Clone(spec.Labels), healthy: spec.Kind == KindExternal}
+	r.eps[spec.Name] = ep
 	return ep, nil
 }
 

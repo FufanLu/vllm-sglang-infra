@@ -12,7 +12,19 @@ import (
 	"sync"
 
 	"github.com/FufanLu/vllm-sglang-infra/internal/backend"
+	"github.com/FufanLu/vllm-sglang-infra/internal/kvindex"
 	"github.com/FufanLu/vllm-sglang-infra/internal/prefix"
+)
+
+// Placement restricts where a request may run.
+type Placement int
+
+const (
+	// Auto keeps the request on the cluster unless every local endpoint is
+	// saturated, then overflows it to an external provider if allowed.
+	Auto Placement = iota
+	LocalOnly
+	ExternalOnly
 )
 
 // Request is what the scheduler knows about an inference request.
@@ -22,9 +34,35 @@ type Request struct {
 	// (system prompt, earlier turns) share a string prefix here, which is what
 	// prefix-aware scorers key on.
 	Prompt string
+	Tenant string
+	// AllowExternal is false for tenants whose data must stay on the cluster.
+	AllowExternal bool
+	Placement     Placement
+	// Role selects prefill or decode endpoints of a disaggregated pool; empty
+	// selects aggregated endpoints that do both.
+	Role string
+	// Tokens are the prompt's token IDs, set when the policy needs them
+	// (see NeedsTokens) and the engine could tokenize the request.
+	Tokens []uint32
+
+	tokenHashCache map[int][]uint64
 
 	hashes   []uint64 // prompt block hashes, computed once per request
 	hashedBy *prefix.Index
+}
+
+// tokenHashes returns the chained hashes of the request's full token blocks
+// of size bs, computed once per block size.
+func (r *Request) tokenHashes(bs int) []uint64 {
+	if hs, ok := r.tokenHashCache[bs]; ok {
+		return hs
+	}
+	if r.tokenHashCache == nil {
+		r.tokenHashCache = map[int][]uint64{}
+	}
+	hs := kvindex.Hashes(r.Tokens, bs)
+	r.tokenHashCache[bs] = hs
+	return hs
 }
 
 // blockHashes returns the request's prompt block hashes under ix, computing
@@ -114,12 +152,23 @@ func (s *Scheduler) Schedule(req *Request, eps []*backend.Endpoint, exclude map[
 	return ep, nil
 }
 
+// NeedsTokens reports whether a scorer needs the prompt's token IDs.
+func (s *Scheduler) NeedsTokens() bool {
+	for _, ws := range s.Scorers {
+		if n, ok := ws.Scorer.(interface{ NeedsTokens() bool }); ok && n.NeedsTokens() {
+			return true
+		}
+	}
+	return false
+}
+
 // policies maps a policy name to its scorers and their default weights. A
 // nil map means the policy uses no scorers.
 var policies = map[string]map[string]float64{
-	"round-robin":  nil,
-	"least-load":   {"queue": 1.0, "kv-usage": 0.5},
-	"prefix-aware": {"prefix": 1.0, "queue": 2.0, "kv-usage": 0.5},
+	"round-robin":          nil,
+	"least-load":           {"queue": 1.0, "kv-usage": 0.5},
+	"prefix-aware":         {"prefix": 1.0, "queue": 2.0, "kv-usage": 0.5},
+	"precise-prefix-aware": {"precise-prefix": 1.0, "queue": 2.0, "kv-usage": 0.5},
 }
 
 // Policies lists the policy names New accepts.
@@ -144,9 +193,18 @@ type Options struct {
 	// PrefixBlockChars and PrefixCapacityBlocks size the prefix index.
 	PrefixBlockChars     int
 	PrefixCapacityBlocks int
+	// Saturation is the in-flight count at which a local endpoint counts as
+	// full for overflow decisions.
+	Saturation int
+	// KVIndex is the event-fed index the precise-prefix-aware policy reads.
+	KVIndex *kvindex.Index
+	// CPUWeight is what a prefix block held only in CPU memory is worth
+	// relative to one on GPU (precise-prefix-aware). Default 0.5.
+	CPUWeight float64
 }
 
 const (
+	DefaultSaturation           = 32
 	DefaultQueueSaturation      = 32
 	DefaultPrefixBlockChars     = 128
 	DefaultPrefixCapacityBlocks = 16384
@@ -164,8 +222,9 @@ func New(policy string, o Options) (*Scheduler, error) {
 		}
 	}
 	s := &Scheduler{
-		Policy:  policy,
-		Filters: []Filter{HealthyFilter{}, ModelFilter{}},
+		Policy: policy,
+		Filters: []Filter{HealthyFilter{}, ModelFilter{}, RoleFilter{},
+			PlacementFilter{Saturation: cmpOr(o.Saturation, DefaultSaturation)}},
 	}
 	if policy == "round-robin" {
 		s.Picker = &RoundRobinPicker{}
@@ -182,6 +241,14 @@ func New(policy string, o Options) (*Scheduler, error) {
 		ix := prefix.New(cmpOr(o.PrefixBlockChars, DefaultPrefixBlockChars),
 			cmpOr(o.PrefixCapacityBlocks, DefaultPrefixCapacityBlocks))
 		scorers = []Scorer{&PrefixScorer{Index: ix}, QueueScorer{Saturation: sat, MaxAge: defaultMaxAge}, kvScorer}
+	case "precise-prefix-aware":
+		if o.KVIndex == nil {
+			return nil, fmt.Errorf("policy %q needs a KV event index", policy)
+		}
+		sat := cmpOr(o.QueueSaturation, DefaultQueueSaturation)
+		recent := prefix.New(1, 4096) // keyed by token-block hashes; block size unused
+		scorers = []Scorer{&PrecisePrefixScorer{Index: o.KVIndex, Recent: recent, CPUWeight: cmpOr(o.CPUWeight, 0.5)},
+			QueueScorer{Saturation: sat, MaxAge: defaultMaxAge}, kvScorer}
 	}
 	for _, sc := range scorers {
 		w, ok := o.Weights[sc.Name()]
