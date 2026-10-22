@@ -21,7 +21,11 @@ result, not just code.
 
 **Exit:** race-detector test suite green; local stack serves streamed traffic.
 
-## M2 — Bring-up on Explorer H200 🚧
+## M2 — Bring-up on Explorer H200 ✅
+
+Four H200 replicas registered with a gateway on a CPU node; round-robin
+61.7 req/s at 47% cache hits, against 76.7 req/s at 89% for prefix-aware
+routing ([results](results/m3-routing-h200.md)).
 
 - Packed vLLM environment (vLLM 0.26.0, cu129) unpacked to node-local disk.
 - `check_gpu.sbatch`: cu129 runtime on driver 570, Triton compilation, a real
@@ -34,7 +38,10 @@ result, not just code.
 **Exit:** four H200 replicas behind the gateway; round-robin vs least-load
 baseline with P50/P99 TTFT, TPOT, throughput.
 
-## M3 — Prefix-aware routing ✅ (simulated; H200 run in M2)
+## M3 — Prefix-aware routing ✅
+
+- ✅ On four H200s: hit rate 47% → 89%, throughput +24%, median TTFT
+  45 → 21 ms ([results](results/m3-routing-h200.md)).
 
 - ✅ Approximate: the gateway hashes prompt blocks and remembers which
   endpoint served each prefix (LRU, bounded). On simulated engines: hit rate
@@ -65,8 +72,10 @@ token counts.
 ## M5 — Cold start and Slurm autoscaling (D) 🚧
 
 Autoscaler done (Slurm, Kubernetes, and process providers; walltime
-handover; tested; [local demo](results/d-autoscale-local.md)). Cold-start
-measurements are scripted (`cluster/coldstart.sbatch`) and need H200 time.
+handover; tested; [local demo](results/d-autoscale-local.md)). Cold start
+measured on an H200: 80 s cold, 65 s with a warm compile cache, wake from
+sleep 0.85 s ([results](results/d-coldstart-h200.md)). Not yet run on
+H200s: a walltime handover under load.
 
 - Measure ready time of a new replica under weight-staging strategies: NFS
   direct, sequential pre-read, copy to node-local NVMe, page-cache reuse.

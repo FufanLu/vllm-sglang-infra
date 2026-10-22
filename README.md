@@ -13,7 +13,8 @@ allow it overflow to an external provider.
 
 > **Status.** The gateway and platform features are built and tested end to
 > end against simulated engines; results are in [docs/results](docs/results).
-> Measurements on Explorer H200s are in progress. See
+> Routing, KV tiering, MoE, and cold start are measured on Explorer H200s;
+> prefill/decode disaggregation is in progress. See
 > [docs/roadmap.md](docs/roadmap.md); every failure along the way is in
 > [docs/failures.md](docs/failures.md).
 
@@ -24,8 +25,9 @@ allow it overflow to an external provider.
 | Hit rate with two gateways in front of one pool | 70% (approximate index) | **80%** (precise, KV events) |
 | Interactive TTFT p99 under a batch flood | 4768 ms (no flow control) | **293 ms** |
 
-| Measured on an H200 (Explorer) | Result |
+| Measured on H200s (Explorer) | Result |
 |---|---|
+| Cache hits / throughput, 4 replicas, round-robin → prefix-aware | 47% → **89%** / 61.7 → **76.7 req/s**; median TTFT 45 → 21 ms ([routing](docs/results/m3-routing-h200.md)) |
 | vLLM 0.26 (cu129 build) on driver 570 / CUDA 12.8 | works: compile and CUDA graphs included ([cold start](docs/results/d-coldstart-h200.md)) |
 | Qwen3-8B replica start: cold / warm compile cache | 80 s / 65 s (weights load in 5 s) |
 | Wake a sleeping replica | 0.85 s |
@@ -74,12 +76,12 @@ Picker, so each policy is a composition of small plugins. See
 | Area | What | Status |
 |---|---|---|
 | Gateway core | OpenAI-compatible proxy with SSE streaming, health probes, engine metrics, retries before the first byte, upstream cancellation, admin API for self-registering replicas | ✅ |
-| Routing | `round-robin`, `least-load`, `prefix-aware` (approximate index), `precise-prefix-aware` (KV-cache events + engine tokenization, tier-aware) | ✅ sim · 🚧 H200 |
+| Routing | `round-robin`, `least-load`, `prefix-aware` (approximate index), `precise-prefix-aware` (KV-cache events + engine tokenization, tier-aware) | ✅ sim · ✅ H200 |
 | Tenancy | API keys (stored hashed), per-tenant token budgets reserved up front and settled with actual usage (memory or Redis), usage records (JSONL or PostgreSQL), tenant header for llm-d | ✅ |
 | **C** Flow control | Priority bands, token-fair queuing across tenants (VTC), batch capacity share, queue limits and timeouts | ✅ sim |
 | Cloud overflow | External OpenAI-compatible providers; overflow when the pool is full; on-prem-only tenants never leave; cost metered | ✅ sim |
 | **B** PD disaggregation | Gateway picks a prefill and a decode endpoint, relays `kv_transfer_params` (vLLM NixlConnector), falls back to aggregated | ✅ sim · 🚧 H200 |
-| **D** Autoscaling | Scale on in-flight + queued demand with hysteresis; Slurm walltime handover; providers: Slurm, Kubernetes, local processes | ✅ tests · 🚧 H200 |
+| **D** Autoscaling | Scale on in-flight + queued demand with hysteresis; Slurm walltime handover; providers: Slurm, Kubernetes, local processes | ✅ tests · ✅ H200 cold start · 🚧 H200 handover |
 | **E** MoE | DP+EP ranks as endpoints, rank-aware routing | 🚧 H200 |
 | **A** KV tiering | CPU-tier blocks from KV events weigh in routing; vLLM native offload | ✅ H200 (1 replica) |
 | Kubernetes | Pod discovery by label, Deployment scaling, Helm chart, kind demo | ✅ kind |
