@@ -52,6 +52,21 @@ stage_env() {
       log "unpacked $ENV_NAME in $((SECONDS - t0))s"
     fi
   ) 9>"/tmp/.$ENV_NAME.lock"
+  activate_env
+}
+
+# activate_env puts the env's tools on PATH (FlashInfer builds kernels at
+# runtime with ninja and nvcc) and loads a CUDA 12.8 toolkit, the newest the
+# H200 nodes' driver 570 runs. Sampling uses vLLM's native top-k/top-p
+# kernels rather than FlashInfer's, which would be compiled at startup.
+activate_env() {
+  export PATH="$ENV_DIR/bin:$PATH" VIRTUAL_ENV="$ENV_DIR"
+  if module load cuda/12.8.0 >/dev/null 2>&1 && command -v nvcc >/dev/null; then
+    CUDA_HOME=$(dirname "$(dirname "$(command -v nvcc)")")
+    export CUDA_HOME
+  fi
+  export FLASHINFER_WORKSPACE_BASE=/tmp/vsi-flashinfer-$USER
+  export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
 }
 
 # stage_model NAME copies $MODELS/NAME to node-local disk unless this node
