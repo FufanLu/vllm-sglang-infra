@@ -28,6 +28,8 @@ not yet re-run), **open** (cause not established), **worked around**
 | 16 | 10-22 00:23 | Explorer, routing bench `11295951` | Bench exited after 14 s | With no healthy backend yet, `grep` matched nothing and `pipefail` ended the job | `|| true` inside the poll | `81b9788` | fixed (`11295987` kept polling) |
 | 17 | 10-22 00:25 | Explorer, review after #16 | Workloads would have used the user's group id as the number of prompt groups | `GROUPS` is a bash builtin, so `${GROUPS:-96}` never took the default | Renamed to `PROMPT_GROUPS`; resubmitted MoE, PD, KV-tier | `81b9788` | fix pending |
 | 18 | 10-22 01:20 | Explorer, MoE `11295984` | Both DP ranks segfaulted in `ncclNetPluginInit` | NCCL loaded a network plugin that crashed; source not identified (not in the system lib paths or the CUDA module) | `NCCL_NET_PLUGIN=none` for single-node jobs; log `NCCL_*`/`UCX_*` | `3383e3a` | fix pending |
+| 19 | 10-22 01:40 | Explorer, PD `11295985` | Aggregated baseline finished; both 1P1D instances exited: `NIXL is not available` | vLLM imports `nixl._api`, provided by the `nixl` meta package; only `nixl-cu12` (module `nixl_cu12`) was installed | Meta package unpacked into an overlay on `PYTHONPATH` (no 11 GB env rebuild); `setup_env` installs it with `--no-deps` (its deps pull CUDA 13); PD job imports NIXL first and fails fast | (next) | fix pending |
+| 20 | 10-22 01:51 | Explorer, `sbatch` of the PD rerun | `Batch job submission failed: Unexpected message received`; a retry succeeded (`11297370`) and a duplicate (`11297371`) appeared moments later | Transient slurmctld error: the "failed" submission had been accepted after all | Cancelled the duplicate; before retrying a failed `sbatch`, check `squeue` again after a short wait | — | worked around |
 
 Mistakes in my own commands, not in the project. They cost time, so they are listed too:
 
@@ -107,3 +109,20 @@ Both segfaulted at NCCL communicator init, inside `ncclNetPluginInit` /
 and talk over NVLink, so no network plugin is needed. The rerun disables
 plugin loading and logs `NCCL_*` / `UCX_*` so the source can be found if it
 happens again.
+
+### 19. NIXL not importable in the PD job
+
+The aggregated baseline, two Qwen3-8B replicas on two H200s, finished:
+8.1 req/s, 2074 output tok/s, TTFT p50 255 ms, TPOT p50 6 ms. Both
+disaggregated instances then failed at engine start with
+`NIXL is not available` from vLLM's `nixl_utils`.
+
+vLLM loads `nixl._api`. That module comes from the pure-Python `nixl` meta
+package, which detects the CUDA major version (from torch: 12) and loads the
+matching backend `nixl_cu12`. The env had only `nixl-cu12`.
+
+The meta package declares both `nixl-cu12` and `nixl-cu13` as plain
+dependencies, so it has to be installed with `--no-deps`. For the packed r2
+env it sits in `/scratch/$USER/vsi/envs/overlay-r2` on `PYTHONPATH`. That
+avoids forcing every node to unpack a new env: an unpack in this job took
+651 s, against 33 s in the cold-start run, because `/scratch` was busy.

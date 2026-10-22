@@ -20,6 +20,8 @@ trap stop_all EXIT
 gpu_info 2>"$OUT/gpu.txt"
 stage_env
 PYTHON=$ENV_DIR/bin/python
+# Fail fast if the KV connector's transport cannot load.
+"$PYTHON" -P -c "import torch; from nixl._api import nixl_agent; print('nixl ok')" || { log "NIXL not importable"; exit 1; }
 LOCAL=$(stage_model "$MODEL")
 COMMON=(--served-model-name "$MODEL" --max-model-len 16384 --enable-prompt-tokens-details)
 WORK=(-model "$MODEL" -requests "${REQUESTS:-400}" -concurrency "${CONCURRENCY:-16}" -groups "${PROMPT_GROUPS:-400}"

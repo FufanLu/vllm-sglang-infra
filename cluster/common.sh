@@ -61,6 +61,12 @@ stage_env() {
 # kernels rather than FlashInfer's, which would be compiled at startup.
 activate_env() {
   export PATH="$ENV_DIR/bin:$PATH" VIRTUAL_ENV="$ENV_DIR"
+  # Pure-Python packages added after the env was packed live in an overlay
+  # on /scratch, so fixing one does not force every node to unpack a new
+  # 11 GB env. Fold them into the env at the next rebuild (ENV_REV).
+  if [ -d "$ROOT/envs/overlay-$ENV_REV" ]; then
+    export PYTHONPATH="$ROOT/envs/overlay-$ENV_REV${PYTHONPATH:+:$PYTHONPATH}"
+  fi
   if module load cuda/12.8.0 >/dev/null 2>&1 && command -v nvcc >/dev/null; then
     CUDA_HOME=$(dirname "$(dirname "$(command -v nvcc)")")
     export CUDA_HOME

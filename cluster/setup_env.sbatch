@@ -40,6 +40,10 @@ if [ -n "$EXTRA_PKGS" ]; then
   log "installing extras: $EXTRA_PKGS"
   # shellcheck disable=SC2086 # a space-separated list
   "${UV[@]}" --torch-backend "$CUDA_TAG" $EXTRA_PKGS || log "extras failed; PD experiments will not have NIXL"
+  # vLLM imports nixl._api, which the nixl meta package provides by loading
+  # nixl_cu12. Its own dependencies would also pull nixl-cu13 (CUDA 13,
+  # unusable on driver 570), hence --no-deps.
+  "${UV[@]}" --no-deps "nixl==1.5.0" || log "nixl meta package failed"
 fi
 
 # No GPU here, so this only proves the packages import and shows the CUDA
