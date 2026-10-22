@@ -41,6 +41,7 @@ Mistakes in my own commands, not in the project. They cost time, so they are lis
 | 10-21 19:50 | Ran a stale `bin/loadgen` without the new flag | Rebuild (`go build -o bin/ ./cmd/...`) before each run |
 | 10-21 20:20 | A nested-quote `curl` returned 400 | Quote JSON with single quotes, outside `bash -c` |
 | 10-22 00:35 | `timeout` is not available on macOS | Use the tool's own timeout |
+| 10-22 09:15 | The ssh master had dropped; a background `ssh explorer` fell back to password login and failed three times with no one to answer | Every scripted ssh uses `-o BatchMode=yes` (no password fallback) after `ssh -O check`; repeated failed logins lock the login nodes |
 
 ## Details
 
