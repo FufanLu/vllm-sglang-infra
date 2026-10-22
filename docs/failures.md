@@ -31,6 +31,7 @@ not yet re-run), **open** (cause not established), **worked around**
 | 19 | 10-22 01:40 | Explorer, PD `11295985` | Aggregated baseline finished; both 1P1D instances exited: `NIXL is not available` | vLLM imports `nixl._api`, provided by the `nixl` meta package; only `nixl-cu12` (module `nixl_cu12`) was installed | Meta package unpacked into an overlay on `PYTHONPATH` (no 11 GB env rebuild); `setup_env` installs it with `--no-deps` (its deps pull CUDA 13); PD job imports NIXL first and fails fast | `c399aee` | fix pending |
 | 20 | 10-22 01:51 | Explorer, `sbatch` of the PD rerun | `Batch job submission failed: Unexpected message received`; a retry succeeded (`11297370`) and a duplicate (`11297371`) appeared moments later | Transient slurmctld error: the "failed" submission had been accepted after all | Cancelled the duplicate; before retrying a failed `sbatch`, check `squeue` again after a short wait | — | worked around |
 | 21 | 10-22 02:00 | Explorer, MoE rerun `11297201` | Same segfault in `ncclNetPluginInit` with `NCCL_NET_PLUGIN=none` | NCCL 2.28 starts its built-in transports (IB, socket) through the same plugin path; the crash is likely in IB init on nodes with an IB NIC (not yet confirmed) | `NCCL_IB_DISABLE=1` for single-node jobs; `NCCL_DEBUG=INFO` (INIT,NET) in the MoE job; MoE configurations now run independently so one failing start does not lose the rest | `70fb6e8` | fix pending |
+| 22 | 10-22 05:05 | Explorer, KV-tier `11295986` | Run completed (CPU offload: cache hits 59.7% → 99.6%), but the gateway's index showed 0 CPU-tier blocks and 0 orphans | vLLM 0.26's offloading connector sends placeholder CPU events (hash only, no token IDs, `block_size` 0) unless `self_describing_kv_events` is set; the index dropped them silently | Job sets `self_describing_kv_events` through `--kv-transfer-config`; the index counts token-less stores as orphans and reference-counts offload tiers; the job flags an empty CPU tier in `failed.txt` | `62daa0a` | fix pending |
 
 Mistakes in my own commands, not in the project. They cost time, so they are listed too:
 
@@ -127,3 +128,27 @@ dependencies, so it has to be installed with `--no-deps`. For the packed r2
 env it sits in `/scratch/$USER/vsi/envs/overlay-r2` on `PYTHONPATH`. That
 avoids forcing every node to unpack a new env: an unpack in this job took
 651 s, against 33 s in the cold-start run, because `/scratch` was busy.
+
+### 22. KV-tier run: CPU tier invisible to the gateway
+
+Engine side, the run did what it should. With 6 GiB of GPU KV (43,680
+tokens) and about 100k tokens of prefixes, the second pass hit the cache for
+59.7% of prompt tokens on GPU only and 99.6% with 48 GiB of CPU offload;
+throughput went from 34.8 to 53.2 req/s and TTFT p50 from 110 to 69 ms.
+vLLM's own metrics showed 44.6 GB loaded back from CPU.
+
+The gateway's index, though, reported `tier="cpu"} 0` and no orphans. In
+vLLM 0.26 the CPU manager does emit `BlockStored` / `BlockRemoved` with
+`medium: CPU`, but `OffloadingEventsTracker` fills in token IDs, parent hash
+and block size only when `kv_connector_extra_config["self_describing_kv_events"]`
+is true. Without it each event carries the offload key's hash alone. The
+index needs token IDs to compute its own hash, so it returned early, and
+the early return was not counted anywhere.
+
+`--kv-offloading-size` builds the connector config itself, but it merges into
+an existing `--kv-transfer-config`, so the job passes only the extra key
+there. Self-describing chunks that overlap a shared prefix re-announce the
+shared blocks, so offload tiers are now reference-counted (with the default
+`blocks_per_chunk` of 1 this does not happen, but larger chunks would
+otherwise make an eviction drop blocks another chunk still holds).
+
