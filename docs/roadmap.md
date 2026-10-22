@@ -131,10 +131,12 @@ flood ([results](results/c-flow-control-sim.md)).
 **Exit:** interactive P99 TTFT under a batch flood, with and without flow
 control; per-tenant token share.
 
-## M9 — Prefill/decode disaggregation (B) 🚧
+## M9 — Prefill/decode disaggregation (B) ✅
 
-Gateway orchestration done and tested (prefill with `do_remote_decode`,
-pass-through of `kv_transfer_params`, fallback). Needs the H200 run.
+1P1D on two H200s, KV over NIXL (about 5 ms per hand-off): median TTFT
+258 → 112 ms and flat TPOT against the same GPUs aggregated; one prefill GPU
+becomes the tail (TTFT p99 509 → 932 ms) ([results](results/b-pd-h200.md)).
+Next: xPyD ratios.
 
 - One prefill and one decode vLLM on two H200s of one node, KV over NIXL.
 - The gateway picks a prefill/decode pair per request and orchestrates the
