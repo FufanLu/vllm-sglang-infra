@@ -32,6 +32,7 @@ not yet re-run), **open** (cause not established), **worked around**
 | 20 | 10-22 01:51 | Explorer, `sbatch` of the PD rerun | `Batch job submission failed: Unexpected message received`; a retry succeeded (`11297370`) and a duplicate (`11297371`) appeared moments later | Transient slurmctld error: the "failed" submission had been accepted after all | Cancelled the duplicate; before retrying a failed `sbatch`, check `squeue` again after a short wait | — | worked around |
 | 21 | 10-22 02:00 | Explorer, MoE rerun `11297201` | Same segfault in `ncclNetPluginInit` with `NCCL_NET_PLUGIN=none` | NCCL 2.28 starts its built-in transports (IB, socket) through the same plugin path; the crash is likely in IB init on nodes with an IB NIC (not yet confirmed) | `NCCL_IB_DISABLE=1` for single-node jobs; `NCCL_DEBUG=INFO` (INIT,NET) in the MoE job; MoE configurations now run independently so one failing start does not lose the rest | `70fb6e8` | fix pending |
 | 22 | 10-22 02:05 | Explorer, KV-tier `11295986` | Run completed (CPU offload: cache hits 59.7% → 99.6%), but the gateway's index showed 0 CPU-tier blocks and 0 orphans | vLLM 0.26's offloading connector sends placeholder CPU events (hash only, no token IDs, `block_size` 0) unless `self_describing_kv_events` is set; the index dropped them silently | Job sets `self_describing_kv_events` through `--kv-transfer-config`; the index counts token-less stores as orphans and reference-counts offload tiers; the job flags an empty CPU tier in `failed.txt` | `62daa0a` | fix pending |
+| 23 | 10-22 04:14 | Explorer, PD rerun `11297370` | NIXL now imported and the aggregated baseline repeated (8.1 req/s); both 1P1D engines then failed: `NIXL_ERR_BACKEND` from `createBackend('UCX')` | NIXL's UCX backend connects to itself at start-up; UCX picked TCP and `connect()` to the node's own address (`10.99.104.52`) was refused. Why the listener was unreachable is not established | The job probes the UCX backend before the engines start: default transports, then `UCX_TLS=cuda_ipc,cuda_copy,sm,self` (same node only); it logs each attempt to `ucx-probe.txt` and exits early if none works | `93e0d23` | fix pending |
 
 Mistakes in my own commands, not in the project. They cost time, so they are listed too:
 
@@ -152,4 +153,17 @@ there. Self-describing chunks that overlap a shared prefix re-announce the
 shared blocks, so offload tiers are now reference-counted (with the default
 `blocks_per_chunk` of 1 this does not happen, but larger chunks would
 otherwise make an eviction drop blocks another chunk still holds).
+
+### 23. PD: NIXL's UCX backend could not reach itself
+
+With the `nixl` meta package in place (#19), both engines got as far as
+creating the NIXL agent. UCX then warned that the node's IB device
+(`mlx5_0`) had no accelerated support, tried TCP, and got `Connection
+refused` connecting to its own worker address. `createBackend` failed, and
+so did engine start-up.
+
+Prefill and decode run on two GPUs of the same node, so the KV copy should
+not need a network transport: `cuda_ipc` copies GPU to GPU over NVLink, and
+shared memory (`sm`) and `self` carry UCX's own messages. The probe tries the
+default first, so the log records whether the default works on another node.
 
