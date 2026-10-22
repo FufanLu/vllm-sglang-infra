@@ -67,6 +67,11 @@ activate_env() {
   fi
   export FLASHINFER_WORKSPACE_BASE=/tmp/vsi-flashinfer-$USER
   export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
+  # NCCL segfaulted loading a network plugin found on the node when two
+  # DP ranks initialized. Jobs here stay within one node, where GPUs talk
+  # over NVLink and need no network plugin.
+  export NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
+  env | grep -E '^(NCCL_|UCX_)' | sort >&2 || true
 }
 
 # stage_model NAME copies $MODELS/NAME to node-local disk unless this node
