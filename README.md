@@ -14,7 +14,8 @@ allow it overflow to an external provider.
 > **Status.** The gateway and platform features are built and tested end to
 > end against simulated engines; results are in [docs/results](docs/results).
 > Measurements on Explorer H200s are in progress. See
-> [docs/roadmap.md](docs/roadmap.md).
+> [docs/roadmap.md](docs/roadmap.md); every failure along the way is in
+> [docs/failures.md](docs/failures.md).
 
 | Result (simulated engines) | Baseline | This project |
 |---|---|---|
