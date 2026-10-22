@@ -41,6 +41,14 @@ done
 log "results in $OUT"
 if [ -n "${CLEANUP_JOBS:-}" ]; then
   log "cancelling $CLEANUP_JOBS"
-  # shellcheck disable=SC2086
-  scancel --signal=TERM --batch $CLEANUP_JOBS || true
+  # slurmctld can time out under load, and an error does not say whether
+  # the signal went through (failure #27): retry until the jobs are gone.
+  for try in 1 2 3 4 5 6; do
+    # shellcheck disable=SC2086
+    left=$(squeue -h -j "${CLEANUP_JOBS// /,}" -t PENDING,RUNNING -o %i 2>/dev/null | tr '\n' ' ') || left=$CLEANUP_JOBS
+    [ -z "${left// /}" ] && break
+    # shellcheck disable=SC2086
+    if [ "$try" -le 3 ]; then scancel --signal=TERM --batch $left || true; else scancel $left || true; fi
+    sleep 30
+  done
 fi
