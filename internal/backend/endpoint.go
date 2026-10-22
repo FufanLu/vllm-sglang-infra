@@ -59,6 +59,17 @@ type Snapshot struct {
 	Waiting   float64   // requests queued inside the engine
 	KVUsage   float64   // fraction of KV-cache capacity in use, 0..1
 	ScrapedAt time.Time // zero until the first successful scrape
+	// GatewayInflight is this gateway's in-flight count when the scrape was
+	// sent. Running+Waiting minus it estimates load from other clients.
+	GatewayInflight int64
+}
+
+// ExternalLoad estimates requests on the engine that did not come through
+// this gateway: what the engine reported, minus what the gateway itself had
+// in flight at the time. Requests still in transit make the difference
+// negative; it is floored at zero.
+func (s Snapshot) ExternalLoad() float64 {
+	return max(0, s.Running+s.Waiting-float64(s.GatewayInflight))
 }
 
 // Endpoint is one routable model-server instance: a vLLM or SGLang replica,

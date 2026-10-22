@@ -101,6 +101,7 @@ func (m *Monitor) discoverModels(ctx context.Context, ep *Endpoint) {
 // Scrape reads one endpoint's /metrics. On failure the previous snapshot is
 // kept; scorers judge freshness by Snapshot.ScrapedAt.
 func (m *Monitor) Scrape(ctx context.Context, ep *Endpoint) {
+	inflight := ep.Inflight()
 	err := m.get(ctx, ep, "/metrics", func(body io.Reader) error {
 		samples, err := parsePromText(body)
 		if err != nil {
@@ -110,7 +111,7 @@ func (m *Monitor) Scrape(ctx context.Context, ep *Endpoint) {
 		if !ok {
 			return fmt.Errorf("no %s scheduler metrics found", ep.Engine)
 		}
-		snap.ScrapedAt = time.Now()
+		snap.ScrapedAt, snap.GatewayInflight = time.Now(), inflight
 		ep.SetSnapshot(snap)
 		return nil
 	})

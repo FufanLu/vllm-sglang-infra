@@ -6,11 +6,16 @@ import (
 	"time"
 
 	"github.com/FufanLu/vllm-sglang-infra/internal/backend"
+	"github.com/FufanLu/vllm-sglang-infra/internal/prefix"
 )
 
 // defaultMaxAge is how old a metrics snapshot may be before scorers stop
 // trusting it. The monitor scrapes every 500ms by default.
 const defaultMaxAge = 5 * time.Second
+
+// defaultKVThreshold is the KV-cache usage above which the kv-usage scorer
+// starts to penalize an endpoint.
+const defaultKVThreshold = 0.7
 
 // HealthyFilter keeps endpoints whose last health probe passed.
 type HealthyFilter struct{}
@@ -41,27 +46,90 @@ func keep(eps []*backend.Endpoint, ok func(*backend.Endpoint) bool) []*backend.E
 }
 
 // QueueScorer prefers endpoints with fewer outstanding requests. Load is the
-// larger of the gateway's own in-flight count (exact, never stale) and the
-// engine's running+waiting count (covers traffic that bypasses the gateway).
-// Scores are min-max normalized across candidates: least loaded gets 1.
-type QueueScorer struct{}
+// gateway's own in-flight count, which is exact and never stale, plus the
+// engine's estimate of load from other clients when the snapshot is fresh.
+//
+// Scraped running/waiting counts are deliberately not used as the load
+// itself: they lag by up to a scrape interval, and an endpoint that just
+// finished its requests would keep looking busy, be avoided, then be
+// stampeded once the next scrape shows it idle.
+//
+// With Saturation zero, scores are min-max normalized across candidates: the
+// least loaded gets 1, the most loaded 0. That ranks well on its own but
+// turns a one-request difference into a full-range gap, so when the score is
+// traded against another signal (prefix affinity) Saturation is set and the
+// score is absolute: 1 - load/Saturation, floored at 0.
+type QueueScorer struct {
+	Saturation float64
+	MaxAge     time.Duration
+}
 
 func (QueueScorer) Name() string { return "queue" }
 
-func (QueueScorer) Score(_ *Request, eps []*backend.Endpoint) []float64 {
+func (q QueueScorer) Score(_ *Request, eps []*backend.Endpoint) []float64 {
 	loads := make([]float64, len(eps))
+	now := time.Now()
 	for i, e := range eps {
-		s := e.Snapshot()
-		loads[i] = max(float64(e.Inflight()), s.Running+s.Waiting)
+		loads[i] = float64(e.Inflight())
+		if s := e.Snapshot(); fresh(s, now, q.MaxAge) {
+			loads[i] += s.ExternalLoad()
+		}
 	}
-	return invertMinMax(loads)
+	if q.Saturation <= 0 {
+		return invertMinMax(loads)
+	}
+	for i, l := range loads {
+		loads[i] = max(0, 1-l/q.Saturation)
+	}
+	return loads
 }
 
-// KVUsageScorer prefers endpoints with more free KV cache, since a full cache
-// forces the engine to queue or preempt. A stale snapshot scores a neutral
-// 0.5 rather than looking idle.
+func fresh(s backend.Snapshot, now time.Time, maxAge time.Duration) bool {
+	return !s.ScrapedAt.IsZero() && now.Sub(s.ScrapedAt) <= maxAge
+}
+
+// PrefixScorer prefers endpoints that already hold the request's prompt
+// prefix in their KV cache: the score is the fraction of the prompt's blocks
+// cached there, per the approximate index. Every pick is recorded, so
+// requests that share a prefix keep landing together.
+type PrefixScorer struct {
+	Index *prefix.Index
+}
+
+func (*PrefixScorer) Name() string { return "prefix" }
+
+func (p *PrefixScorer) Score(req *Request, eps []*backend.Endpoint) []float64 {
+	out := make([]float64, len(eps))
+	hs := req.blockHashes(p.Index)
+	if len(hs) == 0 {
+		return out
+	}
+	for i, e := range eps {
+		out[i] = float64(p.Index.Match(endpointKey(e), hs)) / float64(len(hs))
+	}
+	return out
+}
+
+func (p *PrefixScorer) Picked(req *Request, ep *backend.Endpoint) {
+	p.Index.Record(endpointKey(ep), req.blockHashes(p.Index))
+}
+
+// endpointKey identifies an endpoint's cache. It includes the URL so that a
+// replica re-registered under the same name on another node starts empty.
+func endpointKey(e *backend.Endpoint) string {
+	return e.Name + "@" + e.URL.String()
+}
+
+// KVUsageScorer steers traffic away from endpoints whose KV cache is nearly
+// full, since a full cache forces the engine to queue or preempt. Below
+// Threshold every endpoint scores 1: small differences in usage say nothing
+// about latency, and letting them decide ties would herd requests onto
+// whichever endpoint reported the lowest number at the last scrape. Above
+// Threshold the score falls linearly to 0 at full. A stale snapshot scores a
+// neutral 0.5.
 type KVUsageScorer struct {
-	MaxAge time.Duration
+	MaxAge    time.Duration
+	Threshold float64
 }
 
 func (KVUsageScorer) Name() string { return "kv-usage" }
@@ -71,11 +139,14 @@ func (k KVUsageScorer) Score(_ *Request, eps []*backend.Endpoint) []float64 {
 	now := time.Now()
 	for i, e := range eps {
 		s := e.Snapshot()
-		if s.ScrapedAt.IsZero() || now.Sub(s.ScrapedAt) > k.MaxAge {
+		switch u := min(max(s.KVUsage, 0), 1); {
+		case !fresh(s, now, k.MaxAge):
 			out[i] = 0.5
-			continue
+		case u <= k.Threshold:
+			out[i] = 1
+		default:
+			out[i] = 1 - (u-k.Threshold)/(1-k.Threshold)
 		}
-		out[i] = 1 - min(max(s.KVUsage, 0), 1)
 	}
 	return out
 }

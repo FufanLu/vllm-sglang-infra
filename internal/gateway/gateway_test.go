@@ -48,7 +48,7 @@ func newHarness(t *testing.T, policy string, engines map[string]fakeengine.Confi
 	h.mon.ProbeAll(context.Background())
 	h.mon.ScrapeAll(context.Background())
 
-	sched, err := scheduler.New(policy, nil)
+	sched, err := scheduler.New(policy, scheduler.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

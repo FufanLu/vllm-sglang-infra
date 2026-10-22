@@ -74,12 +74,25 @@ the requested model; unknown model lists pass).
 
 **Scorers** (M1), each in [0, 1]:
 
-- `queue`: load_i = max(inflight_i, running_i + waiting_i), score =
-  (max − load_i) / (max − min), or 1 when all are equal. The gateway's own
-  in-flight count is exact and instant; the engine's counts cover traffic
-  that bypassed the gateway.
-- `kv-usage`: 1 − kv_usage_i, or 0.5 when the snapshot is older than 5 s, so
-  a stale endpoint neither looks idle nor full.
+- `queue`: load_i = inflight_i + external_i, where inflight is the
+  gateway's own count (exact and instant) and external = max(0, running +
+  waiting − inflight at scrape time) estimates traffic that bypassed the
+  gateway, used only while the snapshot is fresh. Scraped counts are not
+  used as the load itself: they lag by a scrape interval, and an endpoint
+  that just drained would look busy, be avoided, then be stampeded. The
+  least-load policy min-max normalizes, (max − load_i) / (max − min); the
+  prefix-aware policy uses an absolute score, 1 − load_i / saturation, so a
+  one-request difference is a small difference.
+- `kv-usage`: 1 below 70% usage, falling linearly to 0 at 100%; 0.5 when the
+  snapshot is older than 5 s. Small usage differences carry no latency
+  signal, and letting them break ties herds requests onto whichever endpoint
+  reported the lowest number at the last scrape.
+- `prefix` (M3): the fraction of the request's prompt blocks the endpoint
+  holds, from an approximate index. The prompt is cut into 128-character
+  blocks with chained hashes, so block i's hash covers the whole prefix up to
+  block i. The index remembers, per endpoint, the blocks of the requests it
+  was sent, in an LRU sized like the engine's cache. Blocks are touched
+  tail-first so, as in vLLM, a sequence loses its tail before its head.
 
 **Pickers**: `max-score` (ties broken uniformly at random) and
 `round-robin` (ignores scores; the baseline).
@@ -88,12 +101,16 @@ Picks are serialized. Scoring costs microseconds, and serializing means a
 burst of requests sees each other's in-flight slots instead of all choosing
 the endpoint that looked idle at the last scrape.
 
+With weights p for prefix and q for queue, an endpoint holding the whole
+prefix keeps winning until it is saturation × p / q requests busier than the
+alternative (16 with the defaults). Once the alternative serves the prefix,
+it holds it too, so a hot prefix spreads to a second replica instead of
+overloading the first.
+
 **Planned scorers.**
 
-- `prefix` (M3): fraction of the request's prompt blocks already cached on
-  the endpoint. Approximate mode keeps a bounded LRU of block-hash →
-  endpoint learned from the gateway's own routing; precise mode consumes vLLM
-  KV-cache events. Combined with `queue` so that affinity yields under load.
+- Precise prefix matching (M3): consume vLLM KV-cache events so the index
+  reflects actual evictions.
 - DP-rank-aware routing (M6): ranks are endpoints. Because MoE ranks step in
   lockstep, imbalance wastes every rank's step, so the load term carries more
   weight than with independent replicas.

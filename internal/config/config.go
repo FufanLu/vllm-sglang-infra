@@ -38,6 +38,26 @@ type Backend struct {
 type Scheduler struct {
 	Policy  string             `yaml:"policy"`  // see scheduler.Policies()
 	Weights map[string]float64 `yaml:"weights"` // overrides the policy's scorer weights
+	// QueueSaturation (prefix-aware) is the load at which the queue score
+	// reaches 0; it sets how much busier a cache-holding endpoint may be.
+	QueueSaturation float64 `yaml:"queue_saturation"`
+	Prefix          Prefix  `yaml:"prefix"`
+}
+
+// Prefix sizes the approximate prefix index of the prefix-aware policy.
+type Prefix struct {
+	BlockChars     int `yaml:"block_chars"`     // prompt characters per hashed block
+	CapacityBlocks int `yaml:"capacity_blocks"` // blocks remembered per endpoint (its cache size)
+}
+
+// Options converts the scheduler section for scheduler.New.
+func (s Scheduler) Options() scheduler.Options {
+	return scheduler.Options{
+		Weights:              s.Weights,
+		QueueSaturation:      s.QueueSaturation,
+		PrefixBlockChars:     s.Prefix.BlockChars,
+		PrefixCapacityBlocks: s.Prefix.CapacityBlocks,
+	}
 }
 
 type Health struct {
@@ -95,6 +115,9 @@ func Load(path string) (Config, error) {
 	if tok := os.Getenv("VSI_ADMIN_TOKEN"); tok != "" {
 		cfg.Admin.Token = tok
 	}
+	if p := os.Getenv("VSI_SCHEDULER_POLICY"); p != "" {
+		cfg.Scheduler.Policy = p
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -125,7 +148,7 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("backends[%d]: %w", i, err))
 		}
 	}
-	if _, err := scheduler.New(c.Scheduler.Policy, c.Scheduler.Weights); err != nil {
+	if _, err := scheduler.New(c.Scheduler.Policy, c.Scheduler.Options()); err != nil {
 		errs = append(errs, err)
 	}
 	for name, d := range map[string]time.Duration{

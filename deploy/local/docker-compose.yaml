@@ -22,10 +22,10 @@ x-sim: &sim
     --enable-kvcache --kv-cache-size 2048 --block-size 16
 
 services:
-  sim-0: *sim
-  sim-1: *sim
-  sim-2: *sim
-  sim-3: *sim
+  sim-0: { <<: *sim, ports: ["18000:8000"] }
+  sim-1: { <<: *sim, ports: ["18001:8000"] }
+  sim-2: { <<: *sim, ports: ["18002:8000"] }
+  sim-3: { <<: *sim, ports: ["18003:8000"] }
 
   gateway:
     build:
@@ -33,6 +33,9 @@ services:
     command: ["-config", "/etc/vsi/gateway.yaml"]
     environment:
       VSI_ADMIN_TOKEN: local-dev-token
+      # Switch policies without editing files:
+      #   VSI_SCHEDULER_POLICY=prefix-aware docker compose ... up -d gateway
+      VSI_SCHEDULER_POLICY: ${VSI_SCHEDULER_POLICY:-least-load}
     volumes:
       - ./gateway.yaml:/etc/vsi/gateway.yaml:ro
     ports:

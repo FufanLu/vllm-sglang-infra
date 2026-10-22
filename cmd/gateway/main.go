@@ -50,7 +50,7 @@ func run(cfgPath string, log *slog.Logger) error {
 			return fmt.Errorf("backend %s: %w", b.Name, err)
 		}
 	}
-	sched, err := scheduler.New(cfg.Scheduler.Policy, cfg.Scheduler.Weights)
+	sched, err := scheduler.New(cfg.Scheduler.Policy, cfg.Scheduler.Options())
 	if err != nil {
 		return err
 	}

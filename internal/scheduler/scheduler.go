@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/FufanLu/vllm-sglang-infra/internal/backend"
+	"github.com/FufanLu/vllm-sglang-infra/internal/prefix"
 )
 
 // Request is what the scheduler knows about an inference request.
@@ -21,6 +22,18 @@ type Request struct {
 	// (system prompt, earlier turns) share a string prefix here, which is what
 	// prefix-aware scorers key on.
 	Prompt string
+
+	hashes   []uint64 // prompt block hashes, computed once per request
+	hashedBy *prefix.Index
+}
+
+// blockHashes returns the request's prompt block hashes under ix, computing
+// them on first use so the scorer and the recorder share one pass.
+func (r *Request) blockHashes(ix *prefix.Index) []uint64 {
+	if r.hashedBy != ix {
+		r.hashes, r.hashedBy = ix.Hashes(r.Prompt), ix
+	}
+	return r.hashes
 }
 
 // Filter removes endpoints that must not receive the request.
@@ -40,6 +53,12 @@ type Scorer interface {
 type Picker interface {
 	Name() string
 	Pick(eps []*backend.Endpoint, scores []float64) *backend.Endpoint
+}
+
+// Recorder is implemented by plugins that learn from decisions, such as the
+// prefix scorer remembering where each prompt was sent.
+type Recorder interface {
+	Picked(req *Request, ep *backend.Endpoint)
 }
 
 type WeightedScorer struct {
@@ -87,14 +106,20 @@ func (s *Scheduler) Schedule(req *Request, eps []*backend.Endpoint, exclude map[
 	}
 	ep := s.Picker.Pick(cands, total)
 	ep.Acquire()
+	for _, ws := range s.Scorers {
+		if r, ok := ws.Scorer.(Recorder); ok {
+			r.Picked(req, ep)
+		}
+	}
 	return ep, nil
 }
 
-// policies maps a policy name to its default scorer weights. A nil map means
-// the policy uses no scorers.
+// policies maps a policy name to its scorers and their default weights. A
+// nil map means the policy uses no scorers.
 var policies = map[string]map[string]float64{
-	"round-robin": nil,
-	"least-load":  {"queue": 1.0, "kv-usage": 0.5},
+	"round-robin":  nil,
+	"least-load":   {"queue": 1.0, "kv-usage": 0.5},
+	"prefix-aware": {"prefix": 1.0, "queue": 2.0, "kv-usage": 0.5},
 }
 
 // Policies lists the policy names New accepts.
@@ -107,12 +132,36 @@ func Policies() []string {
 	return names
 }
 
-// New builds the scheduler for a named policy. weights overrides the
-// policy's default scorer weights by scorer name.
-func New(policy string, weights map[string]float64) (*Scheduler, error) {
+// Options tune a policy. Zero values take the defaults.
+type Options struct {
+	// Weights overrides the policy's scorer weights by scorer name.
+	Weights map[string]float64
+	// QueueSaturation is the load (requests) at which the prefix-aware
+	// policy's queue score reaches 0. With prefix weight p and queue weight
+	// q, an endpoint holding the whole prefix keeps winning until it is
+	// QueueSaturation*p/q requests busier than an idle one.
+	QueueSaturation float64
+	// PrefixBlockChars and PrefixCapacityBlocks size the prefix index.
+	PrefixBlockChars     int
+	PrefixCapacityBlocks int
+}
+
+const (
+	DefaultQueueSaturation      = 32
+	DefaultPrefixBlockChars     = 128
+	DefaultPrefixCapacityBlocks = 16384
+)
+
+// New builds the scheduler for a named policy.
+func New(policy string, o Options) (*Scheduler, error) {
 	defaults, ok := policies[policy]
 	if !ok {
 		return nil, fmt.Errorf("unknown scheduler policy %q (want one of %v)", policy, Policies())
+	}
+	for name := range o.Weights {
+		if _, ok := defaults[name]; !ok {
+			return nil, fmt.Errorf("policy %q has no scorer %q", policy, name)
+		}
 	}
 	s := &Scheduler{
 		Policy:  policy,
@@ -122,13 +171,20 @@ func New(policy string, weights map[string]float64) (*Scheduler, error) {
 		s.Picker = &RoundRobinPicker{}
 		return s, nil
 	}
-	for name := range weights {
-		if _, ok := defaults[name]; !ok {
-			return nil, fmt.Errorf("policy %q has no scorer %q", policy, name)
-		}
+
+	var scorers []Scorer
+	kvScorer := KVUsageScorer{MaxAge: defaultMaxAge, Threshold: defaultKVThreshold}
+	switch policy {
+	case "least-load":
+		scorers = []Scorer{QueueScorer{MaxAge: defaultMaxAge}, kvScorer}
+	case "prefix-aware":
+		sat := cmpOr(o.QueueSaturation, DefaultQueueSaturation)
+		ix := prefix.New(cmpOr(o.PrefixBlockChars, DefaultPrefixBlockChars),
+			cmpOr(o.PrefixCapacityBlocks, DefaultPrefixCapacityBlocks))
+		scorers = []Scorer{&PrefixScorer{Index: ix}, QueueScorer{Saturation: sat, MaxAge: defaultMaxAge}, kvScorer}
 	}
-	for _, sc := range []Scorer{QueueScorer{}, KVUsageScorer{MaxAge: defaultMaxAge}} {
-		w, ok := weights[sc.Name()]
+	for _, sc := range scorers {
+		w, ok := o.Weights[sc.Name()]
 		if !ok {
 			w = defaults[sc.Name()]
 		}
@@ -136,4 +192,12 @@ func New(policy string, weights map[string]float64) (*Scheduler, error) {
 	}
 	s.Picker = MaxScorePicker{}
 	return s, nil
+}
+
+// cmpOr returns v, or def when v is zero or negative.
+func cmpOr[T int | float64](v, def T) T {
+	if v > 0 {
+		return v
+	}
+	return def
 }

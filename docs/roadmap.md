@@ -34,10 +34,11 @@ result, not just code.
 **Exit:** four H200 replicas behind the gateway; round-robin vs least-load
 baseline with P50/P99 TTFT, TPOT, throughput.
 
-## M3 — Prefix-aware routing
+## M3 — Prefix-aware routing 🚧
 
-- Approximate: the gateway hashes prompt blocks and remembers which endpoint
-  served each prefix (LRU, bounded).
+- ✅ Approximate: the gateway hashes prompt blocks and remembers which
+  endpoint served each prefix (LRU, bounded). On simulated engines: hit rate
+  39% → 80%, median TTFT 660 → 53 ms ([results](results/m3-prefix-routing-sim.md)).
 - Precise: subscribe to vLLM KV-cache events (ZMQ) and keep a global index of
   which blocks each endpoint holds.
 - Scorer combining prefix-match length with load, so affinity yields when an
