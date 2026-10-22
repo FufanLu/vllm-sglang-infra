@@ -22,7 +22,7 @@ PYTHON=$ENV_DIR/bin/python
 LOCAL=$(stage_model "$MODEL")
 # ~6 GiB of GPU KV (~43k Qwen3-8B tokens) against ~100k tokens of prefixes.
 COMMON=(--served-model-name "$MODEL" --max-model-len 8192 --kv-cache-memory-bytes "${GPU_KV:-6G}")
-WORK=(-model "$MODEL" -requests "${REQUESTS:-600}" -concurrency "${CONCURRENCY:-16}" -groups "${GROUPS:-48}"
+WORK=(-model "$MODEL" -requests "${REQUESTS:-600}" -concurrency "${CONCURRENCY:-16}" -groups "${PROMPT_GROUPS:-48}"
   -prefix-words "${PREFIX_WORDS:-1500}" -max-tokens 32 -seed 1)
 GWPORT=$(free_port)
 
@@ -41,7 +41,7 @@ for mode in gpu-only cpu-offload; do
   # Two passes: the first fills the tiers, the second measures reuse.
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$mode warmup" "${WORK[@]}" >/dev/null
   loadgen -url "http://127.0.0.1:$GWPORT" -label "$mode" "${WORK[@]}" -json | tee "$OUT/$mode.txt"
-  curl -s --noproxy '*' "http://127.0.0.1:$GWPORT/metrics" | grep -E '^vsi_kvindex' | tee "$OUT/$mode-index.txt"
+  curl -s --noproxy '*' "http://127.0.0.1:$GWPORT/metrics" | grep -E '^vsi_kvindex' | tee "$OUT/$mode-index.txt" || true
   stop_all
 done
 log "results in $OUT"

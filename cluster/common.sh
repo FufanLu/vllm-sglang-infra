@@ -152,7 +152,9 @@ startup_times() {
 wait_backends() {
   local url=$1 token=$2 n=$3 timeout=$4 t=0 have=0
   while [ "$t" -lt "$timeout" ]; do
-    have=$(curl -s --noproxy '*' -H "Authorization: Bearer $token" "$url/admin/backends" | grep -o '"healthy":true' | wc -l | tr -d ' ')
+    # grep finds nothing while no backend is healthy; under pipefail that
+    # must not end the job.
+    have=$( (curl -s --noproxy '*' -H "Authorization: Bearer $token" "$url/admin/backends" | grep -o '"healthy":true' || true) | wc -l | tr -d ' ')
     [ "$have" -ge "$n" ] && return 0
     sleep 10
     t=$((t + 10))

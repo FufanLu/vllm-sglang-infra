@@ -22,7 +22,7 @@ stage_env
 PYTHON=$ENV_DIR/bin/python
 LOCAL=$(stage_model "$MODEL")
 COMMON=(--served-model-name "$MODEL" --max-model-len 16384 --enable-prompt-tokens-details)
-WORK=(-model "$MODEL" -requests "${REQUESTS:-400}" -concurrency "${CONCURRENCY:-16}" -groups "${GROUPS:-400}"
+WORK=(-model "$MODEL" -requests "${REQUESTS:-400}" -concurrency "${CONCURRENCY:-16}" -groups "${PROMPT_GROUPS:-400}"
   -prefix-words "${PREFIX_WORDS:-2500}" -max-tokens "${MAX_TOKENS:-256}" -seed 1)
 GWPORT=$(free_port)
 up() { wait_http "http://127.0.0.1:$1/health" 1800 "$VLLM_PID"; }
@@ -53,6 +53,6 @@ up "$pp"; up "$dp"
 gateway pd true "- { name: prefill, url: \"http://127.0.0.1:$pp\", labels: { role: prefill } }" \
   "- { name: decode, url: \"http://127.0.0.1:$dp\", labels: { role: decode } }"
 loadgen -url "http://127.0.0.1:$GWPORT" -label 1p1d "${WORK[@]}" -json | tee "$OUT/1p1d.txt"
-curl -s --noproxy '*' "http://127.0.0.1:$GWPORT/metrics" | grep -E '^vsi_(pd_prefill_seconds_(sum|count)|retries_total)' | tee "$OUT/pd-metrics.txt"
+curl -s --noproxy '*' "http://127.0.0.1:$GWPORT/metrics" | grep -E '^vsi_(pd_prefill_seconds_(sum|count)|retries_total)' | tee "$OUT/pd-metrics.txt" || true
 stop_all
 log "results in $OUT"

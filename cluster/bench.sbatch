@@ -28,7 +28,7 @@ admin GET /admin/backends >"$OUT/backends.json"
 
 MODEL=${MODEL:-Qwen3-8B}
 WORKLOAD=(-model "$MODEL" -requests "${REQUESTS:-1200}" -concurrency "${CONCURRENCY:-32}"
-  -groups "${GROUPS:-96}" -prefix-words "${PREFIX_WORDS:-1500}" -question-words 24
+  -groups "${PROMPT_GROUPS:-96}" -prefix-words "${PREFIX_WORDS:-1500}" -question-words 24
   -max-tokens "${MAX_TOKENS:-64}" -seed "${SEED:-1}")
 for p in ${POLICIES:-round-robin least-load prefix-aware precise-prefix-aware}; do
   admin PUT /admin/policy "{\"policy\":\"$p\"}" >/dev/null

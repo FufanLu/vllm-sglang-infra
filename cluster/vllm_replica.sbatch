@@ -66,7 +66,7 @@ drain() {
   local t=0
   while [ "$t" -lt "$DRAIN_TIMEOUT" ]; do
     running=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/metrics" |
-      awk '/^vllm:num_requests_(running|waiting)/ { n += $NF } END { print int(n) }')
+      awk '/^vllm:num_requests_(running|waiting)/ { n += $NF } END { print int(n) }' || true)
     [ "${running:-0}" -eq 0 ] && break
     sleep 5
     t=$((t + 5))

@@ -27,7 +27,7 @@ stage_env
 PYTHON=$ENV_DIR/bin/python
 LOCAL=$(stage_model "$MODEL")
 COMMON=(--served-model-name "$MODEL" --max-model-len 8192 --enable-prompt-tokens-details)
-WORK=(-model "$MODEL" -requests "${REQUESTS:-800}" -concurrency "${CONCURRENCY:-32}" -groups "${GROUPS:-64}"
+WORK=(-model "$MODEL" -requests "${REQUESTS:-800}" -concurrency "${CONCURRENCY:-32}" -groups "${PROMPT_GROUPS:-64}"
   -prefix-words "${PREFIX_WORDS:-1000}" -max-tokens "${MAX_TOKENS:-64}" -seed 1)
 GWPORT=$(free_port)
 
