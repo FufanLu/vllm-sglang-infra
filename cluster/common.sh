@@ -52,6 +52,11 @@ export HF_HOME=/tmp/vsi-hf-$USER
 export XDG_CACHE_HOME=/tmp/vsi-cache-$USER
 export VLLM_CACHE_ROOT=/tmp/vsi-vllm-cache-$USER
 export PYTHONUNBUFFERED=1
+# Compute nodes set http_proxy to the cluster's Squid, which answers requests
+# for loopback addresses with 403. SGLang's start-up warmup calls its own
+# server through Python requests, which honours the proxy (failure #32).
+no_proxy="localhost,127.0.0.1,0.0.0.0,::1${no_proxy:+,$no_proxy}"
+export no_proxy NO_PROXY=$no_proxy
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 
