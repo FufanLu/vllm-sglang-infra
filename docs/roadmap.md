@@ -69,13 +69,14 @@ prefix-cache hit rate vs least-load, approximate vs precise.
 **Exit:** quota enforcement under concurrent load; usage totals match engine
 token counts.
 
-## M5 — Cold start and Slurm autoscaling (D) 🚧
+## M5 — Cold start and Slurm autoscaling (D) ✅
 
 Autoscaler done (Slurm, Kubernetes, and process providers; walltime
 handover; tested; [local demo](results/d-autoscale-local.md)). Cold start
 measured on an H200: 80 s cold, 65 s with a warm compile cache, wake from
-sleep 0.85 s ([results](results/d-coldstart-h200.md)). Not yet run on
-H200s: a walltime handover under load.
+sleep 0.85 s ([results](results/d-coldstart-h200.md)). Walltime handover
+on H200s under load: 4 handovers, 90,500 requests, none failed
+([results](results/d-handover-h200.md)).
 
 - Measure ready time of a new replica under weight-staging strategies: NFS
   direct, sequential pre-read, copy to node-local NVMe, page-cache reuse.
