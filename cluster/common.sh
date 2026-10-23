@@ -176,6 +176,10 @@ sglang_default_args() {
 
 # start_sglang LOG PORT MODEL_PATH ARGS... starts an SGLang server in the
 # background, like start_vllm (VLLM_PID holds its pid either way).
+# SGLang's /health runs a one-token generation by default; under the
+# gateway's 1 s probe timeout that flapped the endpoints (failure #33). With
+# generation off, /health reports whether the server has finished starting.
+export SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=${SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION:-0}
 start_sglang() {
   local log=$1 port=$2 model=$3
   shift 3
