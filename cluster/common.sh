@@ -24,6 +24,17 @@ ENV_REV=${ENV_REV:-r2}
 ENV_NAME=vsi-vllm-${VLLM_VERSION}-${CUDA_TAG}-${ENV_REV}
 ENV_DIR=/tmp/$ENV_NAME # identical path on every node, so the packed venv needs no rewriting
 ENV_TAR=$ROOT/envs/$ENV_NAME.tar
+# SGLang jobs (VSI_ENGINE=sglang) use their own env. 0.5.10 is the newest
+# SGLang on CUDA 12 (torch 2.9.1, a CUDA 12.8 build); from 0.5.11 on it needs
+# CUDA 13, which driver 570 cannot run.
+SGLANG_VERSION=${SGLANG_VERSION:-0.5.10}
+SGL_ENV_REV=${SGL_ENV_REV:-r1}
+if [ "${VSI_ENGINE:-vllm}" = sglang ]; then
+  ENV_NAME=vsi-sglang-${SGLANG_VERSION}-${SGL_ENV_REV}
+  ENV_DIR=/tmp/$ENV_NAME
+  ENV_TAR=$ROOT/envs/$ENV_NAME.tar
+  ENV_REV=sgl-$SGL_ENV_REV # no overlay
+fi
 
 mkdir -p "$ROOT/envs" "$MODELS" "$LOGS"
 
@@ -89,10 +100,6 @@ activate_env() {
   # same plugin path, and it still crashed there. Single-node jobs use
   # NVLink/P2P and do not need InfiniBand.
   export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
-  # Not enough: NCCL 2.28 initializes its built-in IB transport through the
-  # same plugin path, and it still crashed there. Single-node jobs use
-  # NVLink/P2P and do not need InfiniBand.
-  export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
   env | grep -E '^(NCCL_|UCX_)' | sort >&2 || true
 }
 
@@ -153,6 +160,25 @@ vllm_default_args() { # vllm_default_args KV_PORT
     --kv-events-config "{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:$1\",\"topic\":\"kv\"}"
 }
 export VLLM_SERVER_DEV_MODE=1
+
+# sglang_default_args KV_PORT: Prometheus metrics, cached-token counts in
+# usage, 16-token pages (the default of 1 sends one KV event per token), and
+# KV events on KV_PORT.
+sglang_default_args() {
+  printf '%s\n' --enable-metrics --enable-cache-report --page-size 16 \
+    --kv-events-config "{\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:$1\",\"topic\":\"kv\"}"
+}
+
+# start_sglang LOG PORT MODEL_PATH ARGS... starts an SGLang server in the
+# background, like start_vllm (VLLM_PID holds its pid either way).
+start_sglang() {
+  local log=$1 port=$2 model=$3
+  shift 3
+  setsid "$ENV_DIR/bin/python" -m sglang.launch_server --model-path "$model" "$@" \
+    --host 0.0.0.0 --port "$port" >"$log" 2>&1 &
+  VLLM_PID=$!
+  PIDS+=("$VLLM_PID")
+}
 
 # start_vllm LOG PORT ARGS... starts vllm serve in the background and sets
 # VLLM_PID. stop_vllm stops it. Several may run at once (PIDS).

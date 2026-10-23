@@ -59,6 +59,8 @@ summary at the end of its log.
 | `sbatch pd_bench.sbatch` | 2 (gpu-short) | B: 1 prefill + 1 decode over NIXL vs two aggregated replicas |
 | `sbatch kvtier_bench.sbatch` | 1 | A: working set larger than GPU KV, with and without native CPU offload; CPU-tier blocks in the precise index |
 | `sbatch handover_bench.sbatch` | 1–2 | D: walltime handover under load; the gateway's Slurm autoscaler launches one-hour replicas and replaces each before it ends |
+| `sbatch setup_sglang_env.sbatch` | 0 | Builds and packs the SGLang 0.5.10 env (short partition, PyPI) |
+| `sbatch sglang_bench.sbatch` | 2 | SGLang: two replicas behind the gateway, routing policies on chat and completion workloads |
 
 Replicas run in vLLM dev mode (`/reset_prefix_cache`, sleep/wake), report
 cached prompt tokens, and publish KV-cache events. Every port is chosen free

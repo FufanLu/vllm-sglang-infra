@@ -37,6 +37,7 @@ type config struct {
 	zipf                   float64
 	seed                   uint64
 	ignoreEOS, jsonSummary bool
+	completions            bool
 	timeout                time.Duration
 }
 
@@ -65,6 +66,7 @@ func main() {
 	flag.Uint64Var(&c.seed, "seed", 1, "random seed; equal seeds give equal request sequences")
 	flag.BoolVar(&c.ignoreEOS, "ignore-eos", true, "ask the engine to always generate -max-tokens tokens")
 	flag.BoolVar(&c.jsonSummary, "json", false, "also print the summary as one JSON line")
+	flag.BoolVar(&c.completions, "completions", false, "send /v1/completions with a prompt instead of chat messages")
 	flag.DurationVar(&c.timeout, "timeout", 5*time.Minute, "per-request timeout")
 	flag.Parse()
 	if c.zipf != 0 && c.zipf <= 1 {
@@ -111,10 +113,15 @@ func buildRequests(c config) [][]byte {
 			"stream_options": map[string]bool{"include_usage": true},
 			"max_tokens":     c.maxTokens,
 			"temperature":    0,
-			"messages": []map[string]string{
+		}
+		question := fmt.Sprintf("Question %d: %s?", i, text(c.qWords))
+		if c.completions {
+			req["prompt"] = prefixes[g] + "\n\n" + question + "\nAnswer:"
+		} else {
+			req["messages"] = []map[string]string{
 				{"role": "system", "content": prefixes[g]},
-				{"role": "user", "content": fmt.Sprintf("Question %d: %s?", i, text(c.qWords))},
-			},
+				{"role": "user", "content": question},
+			}
 		}
 		if c.ignoreEOS {
 			req["ignore_eos"] = true
@@ -157,7 +164,11 @@ func send(c config, client *http.Client, base string, body []byte) result {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 	t0 := time.Now()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
+	path := "/v1/chat/completions"
+	if c.completions {
+		path = "/v1/completions"
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if c.key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.key)
@@ -185,7 +196,7 @@ func send(c config, client *http.Client, base string, body []byte) result {
 		if json.Unmarshal([]byte(data), &ch) != nil {
 			continue
 		}
-		if r.ttft == 0 && slices.ContainsFunc(ch.Choices, func(c choice) bool { return c.Delta.Content != "" }) {
+		if r.ttft == 0 && slices.ContainsFunc(ch.Choices, func(c choice) bool { return c.Delta.Content != "" || c.Text != "" }) {
 			r.ttft = time.Since(t0)
 		}
 		if u := ch.Usage; u != nil {
@@ -217,6 +228,7 @@ type choice struct {
 	Delta struct {
 		Content string `json:"content"`
 	} `json:"delta"`
+	Text string `json:"text"` // completions
 }
 
 type details struct {

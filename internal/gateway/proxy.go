@@ -159,8 +159,10 @@ func (s *Server) admit(ctx context.Context, w http.ResponseWriter, c *call) bool
 
 // tokenize fills in the request's token IDs when the policy matches KV
 // blocks exactly. Any healthy engine serving the model can tokenize: they
-// share a tokenizer and chat template. On failure the request is still
-// scheduled, by load alone.
+// share a tokenizer and chat template. SGLang's /tokenize takes a prompt but
+// no messages (no chat template), so chat requests skip SGLang endpoints.
+// Without tokens the precise policy falls back to approximate prefix
+// matching.
 func (s *Server) tokenize(ctx context.Context, c *call) {
 	if s.opts.Tokenizer == nil || !s.scheduler().NeedsTokens() {
 		return
@@ -174,13 +176,16 @@ func (s *Server) tokenize(ctx context.Context, c *call) {
 		if ep.IsExternal() || !ep.Healthy() || !ep.Serves(c.req.Model) {
 			continue
 		}
+		if len(parts.Messages) > 0 && ep.Engine == backend.EngineSGLang {
+			continue
+		}
 		t0 := time.Now()
 		tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		tokens, err := s.opts.Tokenizer.Tokens(tctx, ep.URL.String(), c.req.Model, parts.Messages, parts.Prompt)
 		cancel()
 		s.opts.Metrics.Tokenize.WithLabelValues(strconv.FormatBool(err == nil)).Observe(time.Since(t0).Seconds())
 		if err != nil {
-			s.opts.Log.Debug("tokenize failed; scheduling by load", "endpoint", ep.Name, "err", err)
+			s.opts.Log.Debug("tokenize failed; matching prefixes approximately", "endpoint", ep.Name, "err", err)
 			return
 		}
 		c.sreq.Tokens = tokens

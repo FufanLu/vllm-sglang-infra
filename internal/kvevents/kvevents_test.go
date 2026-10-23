@@ -90,3 +90,31 @@ func TestTopicAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeSGLangFormat(t *testing.T) {
+	// SGLang 0.5.10 (disaggregation/kv_events.py): positional arrays with
+	// trailing defaults omitted, signed int64 hashes, nil parent for a root
+	// page, one page per event, and attn_dp_rank as the batch's third field.
+	payload, _ := msgpack.Marshal([]any{3.0, []any{
+		[]any{"BlockStored", []any{int64(-42)}, nil, []any{1, 2, 3, 4}, 4, nil, "GPU"},
+		[]any{"BlockStored", []any{int64(7)}, int64(-42), []any{5, 6, 7, 8}, 4, nil, "GPU"},
+		[]any{"BlockRemoved", []any{int64(7)}, "GPU"},
+	}, nil})
+	b, err := Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Events) != 3 || b.Rank != 0 {
+		t.Fatalf("batch = %+v", b)
+	}
+	first, second := b.Events[0], b.Events[1]
+	if first.ParentHash != "" || len(first.TokenIDs) != 4 || first.BlockSize != 4 {
+		t.Errorf("first = %+v", first)
+	}
+	if second.ParentHash != first.BlockHashes[0] {
+		t.Errorf("second's parent %q should name the first block %q", second.ParentHash, first.BlockHashes[0])
+	}
+	if e := b.Events[2]; e.Type != BlockRemoved || e.BlockHashes[0] != second.BlockHashes[0] {
+		t.Errorf("removed = %+v", e)
+	}
+}

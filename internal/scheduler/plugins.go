@@ -188,6 +188,9 @@ type PrecisePrefixScorer struct {
 	Index     *kvindex.Index
 	Recent    *prefix.Index
 	CPUWeight float64
+	// Approx scores requests that come without tokens (no engine could
+	// tokenize them, e.g. chat requests on an SGLang-only pool).
+	Approx *PrefixScorer
 }
 
 func (*PrecisePrefixScorer) Name() string      { return "precise-prefix" }
@@ -196,6 +199,9 @@ func (*PrecisePrefixScorer) NeedsTokens() bool { return true }
 func (p *PrecisePrefixScorer) Score(req *Request, eps []*backend.Endpoint) []float64 {
 	out := make([]float64, len(eps))
 	if len(req.Tokens) == 0 {
+		if p.Approx != nil {
+			return p.Approx.Score(req, eps)
+		}
 		return out
 	}
 	for i, e := range eps {
@@ -217,6 +223,12 @@ func (p *PrecisePrefixScorer) Score(req *Request, eps []*backend.Endpoint) []flo
 }
 
 func (p *PrecisePrefixScorer) Picked(req *Request, ep *backend.Endpoint) {
+	if p.Approx != nil {
+		p.Approx.Picked(req, ep)
+	}
+	if len(req.Tokens) == 0 {
+		return
+	}
 	key := EndpointKey(ep)
 	bs := p.Index.BlockSize(key)
 	if bs == 0 {

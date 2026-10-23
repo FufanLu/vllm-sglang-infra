@@ -287,3 +287,23 @@ func TestPrecisePolicyNeedsIndex(t *testing.T) {
 		t.Error("precise policy built without a KV index")
 	}
 }
+
+func TestPreciseFallsBackToApproximateWithoutTokens(t *testing.T) {
+	eps := endpoints(t, 4)
+	s, err := New("precise-prefix-aware", Options{KVIndex: kvindex.New(), PrefixBlockChars: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No engine could tokenize these (chat requests on SGLang), so they
+	// carry only the prompt text; they must still stick to one endpoint.
+	sys := strings.Repeat("You are a support bot. ", 20)
+	first, _ := s.Schedule(&Request{Prompt: sys + "question 0"}, eps, nil)
+	first.Release()
+	for i := 1; i < 20; i++ {
+		ep, _ := s.Schedule(&Request{Prompt: sys + fmt.Sprintf("question %d", i)}, eps, nil)
+		ep.Release()
+		if ep != first {
+			t.Fatalf("request %d went to %s, want %s which holds the shared prefix", i, ep.Name, first.Name)
+		}
+	}
+}

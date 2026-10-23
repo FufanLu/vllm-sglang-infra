@@ -247,7 +247,10 @@ func New(policy string, o Options) (*Scheduler, error) {
 		}
 		sat := cmpOr(o.QueueSaturation, DefaultQueueSaturation)
 		recent := prefix.New(1, 4096) // keyed by token-block hashes; block size unused
-		scorers = []Scorer{&PrecisePrefixScorer{Index: o.KVIndex, Recent: recent, CPUWeight: cmpOr(o.CPUWeight, 0.5)},
+		approx := prefix.New(cmpOr(o.PrefixBlockChars, DefaultPrefixBlockChars),
+			cmpOr(o.PrefixCapacityBlocks, DefaultPrefixCapacityBlocks))
+		scorers = []Scorer{&PrecisePrefixScorer{Index: o.KVIndex, Recent: recent, CPUWeight: cmpOr(o.CPUWeight, 0.5),
+			Approx: &PrefixScorer{Index: approx}},
 			QueueScorer{Saturation: sat, MaxAge: defaultMaxAge}, kvScorer}
 	}
 	for _, sc := range scorers {

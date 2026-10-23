@@ -142,7 +142,8 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 // resetPrefixCache asks every local engine to drop its prefix cache (vLLM
-// serves /reset_prefix_cache when VLLM_SERVER_DEV_MODE=1).
+// serves /reset_prefix_cache when VLLM_SERVER_DEV_MODE=1; SGLang serves
+// /flush_cache).
 func (s *Server) resetPrefixCache(w http.ResponseWriter, r *http.Request) {
 	results := map[string]string{}
 	var mu sync.Mutex
@@ -155,7 +156,11 @@ func (s *Server) resetPrefixCache(w http.ResponseWriter, r *http.Request) {
 			status := "ok"
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
-			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ep.URL.String()+"/reset_prefix_cache", nil)
+			path := "/reset_prefix_cache"
+			if ep.Engine == backend.EngineSGLang {
+				path = "/flush_cache"
+			}
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ep.URL.String()+path, nil)
 			resp, err := s.opts.Client.Do(req)
 			switch {
 			case err != nil:
