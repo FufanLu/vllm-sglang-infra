@@ -22,10 +22,18 @@ type Slurm struct {
 	// RecheckWait is how long Launch waits before looking for a job that a
 	// failed sbatch may have created anyway (default 5 s).
 	RecheckWait time.Duration
+	// SubmitHold is how long after a failed sbatch Launch only looks for
+	// that job and submits nothing (default 3 min): slurmctld has queued
+	// such a job 22 s after the error.
+	SubmitHold time.Duration
+	// Now is the clock; tests replace it.
+	Now func() time.Time
 
 	mu       sync.Mutex
 	draining map[string]bool
 	listed   map[string]bool // job IDs in the last List
+	failedAt time.Time       // last failed sbatch
+	unsure   map[string]bool // jobs listed before that sbatch
 }
 
 func (s *Slurm) run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -82,28 +90,51 @@ func (s *Slurm) List(ctx context.Context) ([]Replica, error) {
 
 func (s *Slurm) Launch(ctx context.Context) (Replica, error) {
 	args := append([]string{"--parsable", "--job-name", s.JobName, s.Script}, s.Args...)
+	now := s.Now
+	if now == nil {
+		now = time.Now
+	}
 	s.mu.Lock()
-	before := s.listed
+	before, failedAt, unsure := s.listed, s.failedAt, s.unsure
 	s.mu.Unlock()
+	// slurmctld under load can fail the reply and queue the job anyway
+	// ("Unexpected message received", "Socket timed out"), even after the
+	// error. Submitting again would start a second replica, so for a while
+	// after a failure only look for that job.
+	if !failedAt.IsZero() && now().Sub(failedAt) < cmp.Or(s.SubmitHold, 3*time.Minute) {
+		if r, ok := s.findNew(ctx, unsure, 1); ok {
+			s.resolve()
+			return r, nil
+		}
+		return Replica{}, fmt.Errorf("sbatch failed at %s; waiting to see whether it queued a job", failedAt.Format(time.TimeOnly))
+	}
 	out, err := s.run(ctx, "sbatch", args...)
 	if err != nil {
-		// slurmctld under load can fail the reply after accepting the job
-		// ("Unexpected message received", "Socket timed out"). Submitting
-		// again would start a second replica, so look for the job first.
-		if r, ok := s.findNew(ctx, before); ok {
+		s.mu.Lock()
+		s.failedAt, s.unsure = now(), before
+		s.mu.Unlock()
+		if r, ok := s.findNew(ctx, before, 3); ok {
+			s.resolve()
 			return r, nil
 		}
 		return Replica{}, err
 	}
+	s.resolve()
 	id, _, _ := strings.Cut(strings.TrimSpace(string(out)), ";") // "123;cluster" on federated setups
 	return Replica{ID: id, State: Pending}, nil
 }
 
-// findNew lists the pool a few times and returns a job that was not in
-// before.
-func (s *Slurm) findNew(ctx context.Context, before map[string]bool) (Replica, bool) {
+func (s *Slurm) resolve() {
+	s.mu.Lock()
+	s.failedAt, s.unsure = time.Time{}, nil
+	s.mu.Unlock()
+}
+
+// findNew lists the pool up to tries times and returns a job that was not
+// in before.
+func (s *Slurm) findNew(ctx context.Context, before map[string]bool, tries int) (Replica, bool) {
 	wait := cmp.Or(s.RecheckWait, 5*time.Second)
-	for range 3 {
+	for range tries {
 		select {
 		case <-ctx.Done():
 			return Replica{}, false

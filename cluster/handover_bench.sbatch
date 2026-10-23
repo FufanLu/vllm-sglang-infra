@@ -21,8 +21,11 @@ source "${VSI_CODE:-/scratch/$USER/vsi/code}/cluster/common.sh"
 MODEL=${1:-Qwen3-8B}
 OUT=$ROOT/results/handover-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
-REPLICA_WALLTIME=${REPLICA_WALLTIME:-00:40:00}
-HANDOVER_LEAD=${HANDOVER_LEAD:-35m}
+REPLICA_WALLTIME=${REPLICA_WALLTIME:-01:00:00}
+# The lead has to cover the successor's queue wait and start-up (up to
+# 16 + 5.5 min seen), and be well below the walltime: with 40 min and 35 min,
+# replicas counted as expiring before they had served at all.
+HANDOVER_LEAD=${HANDOVER_LEAD:-30m}
 DURATION=${DURATION:-4200} # seconds of load
 POOL=vsi-handover-r$SLURM_JOB_ID
 # The gateway submits the replicas from this node.

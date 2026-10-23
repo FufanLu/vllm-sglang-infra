@@ -160,3 +160,34 @@ func TestSlurmLaunchFindsJobAcceptedDespiteError(t *testing.T) {
 		t.Errorf("launch = %+v, %v after %d sbatch calls; want the accepted job 102 and no resubmission", r, err, sbatches)
 	}
 }
+
+func TestSlurmHoldsSubmissionsAfterAFailedSbatch(t *testing.T) {
+	sbatches := 0
+	queue := "101|RUNNING|2026-10-22T06:30:00\n"
+	clock := time.Date(2026, 10, 22, 22, 25, 0, 0, time.UTC)
+	s := &Slurm{Script: "/c/r.sbatch", JobName: "pool", RecheckWait: time.Millisecond, Now: func() time.Time { return clock },
+		Exec: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "squeue":
+				return []byte(queue), nil
+			case "sbatch":
+				sbatches++
+				return nil, errors.New("sbatch: error: Batch job submission failed: Unexpected message received")
+			}
+			return nil, nil
+		}}
+	ctx := context.Background()
+	s.List(ctx)
+	if _, err := s.Launch(ctx); err == nil {
+		t.Fatal("first launch: the job has not shown up, so it should fail")
+	}
+	clock = clock.Add(time.Minute)
+	if _, err := s.Launch(ctx); err == nil || sbatches != 1 {
+		t.Fatalf("within the hold: err %v after %d sbatch calls; want an error and no new submission", err, sbatches)
+	}
+	queue += "102|PENDING|N/A\n" // the failed submission's job appears late
+	clock = clock.Add(30 * time.Second)
+	if r, err := s.Launch(ctx); err != nil || r.ID != "102" || sbatches != 1 {
+		t.Errorf("launch = %+v, %v after %d sbatch calls; want job 102 adopted", r, err, sbatches)
+	}
+}
