@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=08:00:00
-#SBATCH --signal=B:TERM@600
+#SBATCH --signal=B:TERM@900
 #SBATCH --output=/scratch/%u/vsi/logs/%x_%j.out
 #
 # One vLLM replica on one H200, registered with the gateway while it serves.
@@ -17,15 +17,17 @@
 # one 8-GPU node. The replica publishes KV-cache events (for the precise
 # prefix index) and runs in vLLM dev mode (prefix-cache reset, sleep/wake).
 #
-# Shutdown is a drain, not a kill: Slurm sends SIGTERM ten minutes before the
-# walltime (--signal), the job deregisters so the gateway stops sending new
-# requests, waits for in-flight ones to finish, then stops vLLM.
+# Shutdown is a drain, not a kill: Slurm sends SIGTERM 15 minutes before the
+# walltime (--signal). If the gateway has no other healthy replica yet (the
+# successor may still be queued), the job keeps serving until one registers
+# or only the drain time is left. Then it deregisters so the gateway stops
+# sending new requests, waits for in-flight ones to finish, and stops vLLM.
 set -euo pipefail
 source "${VSI_CODE:-/scratch/$USER/vsi/code}/cluster/common.sh"
 MODEL=${1:?usage: vllm_replica.sbatch <model-name> [vllm serve args...]}
 shift
 NAME=${REPLICA_NAME:-r${SLURM_JOB_ID}}
-DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-300}
+DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-120}
 
 gpu_info
 stage_env
@@ -59,8 +61,28 @@ admin() { # admin METHOD [JSON]
   curl "${args[@]}"
 }
 
+# hold_for_successor returns once the gateway lists another healthy replica,
+# or when the walltime is DRAIN_TIMEOUT + 60 s away (failure #29).
+hold_for_successor() {
+  [ -n "$GATEWAY" ] || return 0
+  local end others
+  end=$(date -d "$(squeue -h -j "$SLURM_JOB_ID" -o %e)" +%s 2>/dev/null) || return 0
+  while [ $((end - $(date +%s))) -gt $((DRAIN_TIMEOUT + 60)) ]; do
+    others=$( (curl -s --noproxy '*' -H "@$AUTH" "$GATEWAY/admin/backends" |
+      grep -oE '"name":"[^"]+"|"healthy":(true|false)' | paste -d' ' - - |
+      grep -v "\"$NAME\"" | grep -c true) || true)
+    if [ "${others:-0}" -gt 0 ]; then
+      log "another replica is healthy"
+      return 0
+    fi
+    sleep 10
+  done
+  log "no other healthy replica before the walltime"
+}
+
 drain() {
   trap - TERM INT
+  hold_for_successor
   log "draining: deregistering $NAME"
   admin DELETE || log "deregister failed (gateway down?)"
   local t=0

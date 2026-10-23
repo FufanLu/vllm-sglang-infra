@@ -58,7 +58,7 @@ summary at the end of its log.
 | `sbatch moe_bench.sbatch` | 2 (gpu-short) | E: Qwen3-30B-A3B-FP8 as DP+EP ranks behind our routing, vLLM's internal DP balancer, TP=2, two replicas |
 | `sbatch pd_bench.sbatch` | 2 (gpu-short) | B: 1 prefill + 1 decode over NIXL vs two aggregated replicas |
 | `sbatch kvtier_bench.sbatch` | 1 | A: working set larger than GPU KV, with and without native CPU offload; CPU-tier blocks in the precise index |
-| `sbatch handover_bench.sbatch` | 1–2 | D: walltime handover under load; the gateway's Slurm autoscaler launches 30-minute replicas and replaces each before it ends |
+| `sbatch handover_bench.sbatch` | 1–2 | D: walltime handover under load; the gateway's Slurm autoscaler launches 40-minute replicas and replaces each before it ends |
 
 Replicas run in vLLM dev mode (`/reset_prefix_cache`, sleep/wake), report
 cached prompt tokens, and publish KV-cache events. Every port is chosen free

@@ -3,15 +3,16 @@
 #SBATCH --partition=short
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --time=01:30:00
+#SBATCH --time=03:00:00
 #SBATCH --output=/scratch/%u/vsi/logs/%x_%j.out
 #
 # D: walltime handover under load. The gateway runs here with the Slurm
 # autoscaler (min = max = 1) and launches the replicas itself, each with a
 # short walltime. A replica ending within HANDOVER_LEAD stops counting as
 # capacity, so the autoscaler submits its successor while it still serves;
-# Slurm's TERM ten minutes before the walltime makes the old one deregister
-# and drain. Load runs the whole time; the result is the error count and a
+# Slurm's TERM 15 minutes before the walltime makes the old one wait for the
+# successor, then deregister and drain. Load runs the whole time; the
+# results are the failed requests, the time with no healthy replica, and a
 # timeline of which replicas served.
 #   sbatch handover_bench.sbatch [model]
 # It writes $ROOT/gateway.addr, so do not run it beside a routing campaign.
@@ -20,9 +21,9 @@ source "${VSI_CODE:-/scratch/$USER/vsi/code}/cluster/common.sh"
 MODEL=${1:-Qwen3-8B}
 OUT=$ROOT/results/handover-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
-REPLICA_WALLTIME=${REPLICA_WALLTIME:-00:30:00}
-HANDOVER_LEAD=${HANDOVER_LEAD:-25m}
-DURATION=${DURATION:-3000} # seconds of load
+REPLICA_WALLTIME=${REPLICA_WALLTIME:-00:40:00}
+HANDOVER_LEAD=${HANDOVER_LEAD:-35m}
+DURATION=${DURATION:-4200} # seconds of load
 POOL=vsi-handover-r$SLURM_JOB_ID
 # The gateway submits the replicas from this node.
 command -v sbatch >/dev/null && command -v squeue >/dev/null || { log "no Slurm client on $(hostname)"; exit 1; }
@@ -76,14 +77,14 @@ log "gateway at $(cat "$ROOT/gateway.addr"); replica walltime $REPLICA_WALLTIME,
 
 wait_backends "$GW" "$VSI_ADMIN_TOKEN" 1 3600
 
-# Timeline: every 15 s, the healthy replicas and the pool's Slurm jobs.
+# Timeline: every 5 s, the healthy replicas and the pool's Slurm jobs.
 (
   while true; do
     healthy=$(curl -s --noproxy '*' -H "@$AUTH" "$GW/admin/backends" |
       grep -oE '"name":"[^"]+"|"healthy":(true|false)' | paste -d' ' - - | grep true | cut -d'"' -f4 | tr '\n' ' ' || true)
     jobs=$(squeue -h --me -n "$POOL" -o '%i:%T' 2>/dev/null | tr '\n' ' ' || true)
     echo "$(date +%H:%M:%S) healthy=[${healthy% }] jobs=[${jobs% }]"
-    sleep 15
+    sleep 5
   done
 ) >"$OUT/timeline.txt" 2>&1 &
 PIDS+=("$!")
@@ -93,8 +94,16 @@ WORK=(-model "$MODEL" -requests 100 -concurrency 8 -groups 16 -prefix-words 300 
 end=$((SECONDS + DURATION)); round=0
 while [ "$SECONDS" -lt "$end" ]; do
   round=$((round + 1))
-  loadgen -url "$GW" -label "round-$round" "${WORK[@]}" -seed "$round" -json | grep '^{' >>"$OUT/rounds.jsonl" || true
+  line=$(loadgen -url "$GW" -label "round-$round" "${WORK[@]}" -seed "$round" -json | grep '^{' || true)
+  echo "$(date +%s) $line" >>"$OUT/rounds.txt"
+  # With no replica every request fails at once; pause instead of counting
+  # millions of instant failures.
+  [[ $line == *'"errors":0,'* ]] || sleep 5
 done
 curl -s --noproxy '*' "$GW/metrics" | grep -E '^vsi_(requests_total|retries_total|autoscale)' >"$OUT/metrics.txt" || true
-awk -F'"errors":' '{split($2,a,","); e+=a[1]; n++} END {print n" rounds, "e" errors"}' "$OUT/rounds.jsonl" | tee "$OUT/summary.txt"
+{
+  awk -F'"errors":' '{split($2,a,","); e+=a[1]; n++} END {print n" rounds of 100 requests, "e" failed"}' "$OUT/rounds.txt"
+  awk '/healthy=\[\]/ {n++} END {print "no healthy replica in " n+0 " of " NR " samples (5 s apart)"}' "$OUT/timeline.txt"
+  grep -c "replica launched" "$LOGS/gateway_${SLURM_JOB_ID}_gateway.log" | sed 's/$/ replicas launched/'
+} | tee "$OUT/summary.txt"
 log "results in $OUT"
