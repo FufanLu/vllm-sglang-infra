@@ -159,3 +159,12 @@ autoscaling 4 → 1 → 5 → 1 with demand ([results](results/m10-kubernetes-ki
 - External OpenAI-compatible providers as a backend class with per-token cost.
 - Overflow when local replicas are saturated or absent; tenants marked
   on-prem-only never leave the cluster.
+
+## M12 — SGLang ✅
+
+SGLang 0.5.10 (the newest on CUDA 12) behind the gateway on two H200s: the
+metrics adapter, KV events from the radix cache, and prefix-cache resets
+work as with vLLM. Prefix routing raises cache hits from about 70% to 90%
+([results](results/sglang-h200.md)). Chat requests cannot be tokenized by
+SGLang, so the precise policy falls back to approximate prefixes for them.
+

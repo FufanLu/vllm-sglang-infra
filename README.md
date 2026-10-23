@@ -3,7 +3,7 @@
 A multi-tenant LLM inference platform for GPU clusters scheduled by **Slurm**,
 with Kubernetes packaging and cloud overflow.
 
-A Go gateway sits in front of vLLM (and, where it runs, SGLang) replicas. It
+A Go gateway sits in front of vLLM and SGLang replicas. It
 speaks the OpenAI API, authenticates tenants, enforces their token budgets,
 and meters usage. For every request it picks the replica — or the
 data-parallel rank of a MoE deployment — where the request will finish
@@ -30,6 +30,7 @@ allow it overflow to an external provider.
 | MoE DP+EP (Qwen3-30B-A3B), vLLM's DP balancer → our rank-aware routing | hits 81% → **89%**, 45.5 → **52.5 req/s**, p99 TTFT 1064 → **317 ms** ([MoE](docs/results/e-moe-h200.md)) |
 | PD on 2 GPUs, aggregated → 1 prefill + 1 decode (KV over NIXL, ~5 ms) | TTFT p50 258 → **112 ms**, TPOT p99 7 → **6 ms**; TTFT p99 509 → 932 ms ([PD](docs/results/b-pd-h200.md)) |
 | Walltime handovers under load, Slurm autoscaler | 4 handovers, 90,500 requests, **0 failed**, pool never empty ([handover](docs/results/d-handover-h200.md)) |
+| SGLang 0.5.10, 2 replicas, round-robin → prefix-aware (completions) | hits 72% → **90%**, 48.4 → **58.6 req/s** ([SGLang](docs/results/sglang-h200.md)) |
 | Cache hits / throughput, 4 replicas, round-robin → prefix-aware | 47% → **89%** / 61.7 → **76.7 req/s**; median TTFT 45 → 21 ms ([routing](docs/results/m3-routing-h200.md)) |
 | vLLM 0.26 (cu129 build) on driver 570 / CUDA 12.8 | works: compile and CUDA graphs included ([cold start](docs/results/d-coldstart-h200.md)) |
 | Qwen3-8B replica start: cold / warm compile cache | 80 s / 65 s (weights load in 5 s) |
@@ -88,6 +89,7 @@ Picker, so each policy is a composition of small plugins. See
 | **E** MoE | DP+EP ranks as endpoints, rank-aware routing | ✅ H200 |
 | **A** KV tiering | CPU-tier blocks from KV events weigh in routing; vLLM native offload | ✅ H200 (1 replica) |
 | Kubernetes | Pod discovery by label, Deployment scaling, Helm chart, kind demo | ✅ kind |
+| SGLang | Metrics adapter, KV events from the radix cache, `/flush_cache`; chat requests fall back to approximate prefixes (SGLang's `/tokenize` applies no chat template) | ✅ H200 (0.5.10) |
 
 ## Quick start (no GPU)
 
