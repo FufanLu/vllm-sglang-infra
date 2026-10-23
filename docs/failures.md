@@ -37,7 +37,9 @@ not yet re-run), **open** (cause not established), **worked around**
 | 25 | 10-22 02:43 | Explorer, MoE `11297386` | `dp-ep-ranks` did not come up within 30 min, and the job then hung until its 2 h limit | Start-up: the profiling run took 1715 s because DeepGEMM compiled FP8 kernels with nvcc (CUDA 12.8 module) on first use. Hang: `stop_all` sent TERM to engines still starting, they ignored it, and `wait` blocked | MoE job sets `VLLM_USE_DEEP_GEMM=0`, `VLLM_MOE_USE_DEEP_GEMM=0`, `--moe-backend triton`; engines start in their own process group and `stop_all` sends KILL to the group after 60 s | `7d7961d`, `e689ad9` | fixed (`11310168`: ranks ready in 64 s, profiling 1.7 s; the failed config was stopped and the job went on) |
 | 26 | 10-22 16:13 | Explorer, MoE `11310168` | `dp-ep-internal` (one `vllm serve`, DP=2 behind vLLM's own balancer) failed: rank 1 hit `CUDA driver error: invalid argument` launching an Inductor Triton kernel in the profiling run; the other three configurations completed | Likely (not confirmed): the kernel came from the torch.compile cache written by the earlier configurations, where every process ran on device 0; here rank 1 runs on device 1 | Internal-balancer config runs with `VLLM_DISABLE_COMPILE_CACHE=1`; `CONFIGS` selects which configurations a job runs, to rerun this one alone | `368eb8c` | fixed (`11310477`, same node: started and served 800 requests; the cause is still only likely) |
 | 27 | 10-22 16:26 | Explorer, routing bench `11310154` | Benchmark finished; cleanup `scancel` of the gateway and four replicas failed with `Socket timed out on send/recv operation`. Two replicas exited anyway; two and the gateway kept running until cancelled by hand | slurmctld overloaded; the error does not say whether the signal was delivered | Cleanup re-checks `squeue` and retries every 30 s, TERM three times, then a plain `scancel` | `075ea09` | fix pending |
-| 28 | 10-22 17:05 | Explorer, handover `11311364` | Job failed at once: `python3: Unknown option: -P` | This job runs on a CPU node without the packed env, so `free_port` fell back to the system Python, which predates `-P` (3.11) | `free_port` uses `-I`, which also keeps the working directory off `sys.path` | `70ef8c4` | fix pending |
+| 28 | 10-22 17:05 | Explorer, handover `11311364` | Job failed at once: `python3: Unknown option: -P` | This job runs on a CPU node without the packed env, so `free_port` fell back to the system Python, which predates `-P` (3.11) | `free_port` uses `-I`, which also keeps the working directory off `sys.path` | `70ef8c4` | fixed (`11311478` started its gateway and launched replicas) |
+| 29 | 10-22 17:55 | Explorer, handover `11311478` | Both walltime handovers left the pool empty: about 4 min, then about 20 s, with every request failing; the job then hit its 1.5 h limit | Each old replica deregistered on Slurm's TERM, 10 min before its walltime, whatever the state of its successor. The successors waited 16 and 11 min in the queue and took 3.5 min to start, more than the 25 min lead allowed | On TERM (now 15 min before the walltime) a replica keeps serving until the gateway lists another healthy replica, or until 3 min are left; the bench uses a 35 min lead with 40 min replicas, a 3 h limit, and reports time with no healthy replica | `5ceb67d` | fix pending |
+| 30 | 10-22 18:23 | Explorer, handover `11311478` | Two successors queued for one expiring replica | `sbatch` from the gateway failed with `Unexpected message received` after slurmctld had accepted the job (as in #20); the next pass did not see it in `squeue` yet and submitted again | After a failed `sbatch`, the Slurm provider lists the pool three times, 5 s apart, and adopts a new job instead of resubmitting | `f87f9c3` | fix pending |
 
 Mistakes in my own commands, not in the project. They cost time, so they are listed too:
 
@@ -219,4 +221,27 @@ Giving up did not stop it. `stop_all` sent TERM to the two `vllm serve`
 processes and waited; an engine in start-up ignores TERM, so `wait` blocked
 until Slurm's time limit, and configurations 2–4 never ran. `stop_all` now
 escalates to KILL on the whole process group after 60 s.
+
+### 29, 30. Walltime handover on H200s
+
+The gateway ran on a CPU node with the Slurm autoscaler (min = max = 1) and
+launched 30-minute replicas itself; load ran in rounds of 100 requests.
+Timeline (Eastern):
+
+| Time | Event |
+|---|---|
+| 20:00 | First replica `11311502` submitted; queued 35 min |
+| 20:39 | It registers; its walltime is under 25 min away, so successor `11312334` is submitted at once |
+| ~20:55 | TERM to the old replica; it deregisters. The successor is still queued |
+| 20:59 | Successor registers: about 4 min with no replica |
+| 21:03 | Next successor `11312870` submitted |
+| ~21:17 | TERM to `11312334`; `11312870` registers at 21:17:55, about 20 s late |
+| 21:23 | `sbatch` fails with `Unexpected message received`; a duplicate follows at 21:25 |
+| 21:30 | The bench job reaches its time limit |
+
+With no replica, the gateway fails each request at once, so the load loop
+ran 29,456 rounds of instant failures. That made the failed-request count
+meaningless; the bench now pauses after a failed round and reports the
+unserved time instead. Between the gaps, 550 rounds (55,000 requests)
+completed without an error.
 
