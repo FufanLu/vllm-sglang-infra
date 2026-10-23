@@ -56,17 +56,16 @@ the same second the successor registered.
 ## Reading
 
 - **Queue wait dominates a handover on a shared cluster.** Successors waited
-  from 1 to 23 minutes in the queue. Starting took 41 s to 2 min when the node
-  already held the env, and 5.5 min when it did not (env unpack 172 s from
-  a busy `/scratch`). No
-  fixed lead time covers that on its own. The old replica has to wait for
+  from 1 to 23 minutes in the queue. Starting took 41 s to 2 min when the
+  node already held the env, and 5.5 min when it did not (env unpack 172 s
+  from a busy `/scratch`). No fixed lead time covers that on its own. The old replica has to wait for
   its successor, and it has to have enough walltime left to do so.
 - **Drains are short.** With 64-token answers, in-flight requests finished
   within 5 s of deregistration.
 - **The lead has to stay well below the walltime.** At 40 min walltime and
   35 min lead, a replica counted as expiring 5 min after it started,
   sometimes before it was serving. So the autoscaler kept submitting
-  successors: 5 replicas for 70 min of load. Production walltimes are hours
+  successors: 5 launches, plus the surplus job below, for 70 min of load. Production walltimes are hours
   (8 h on this partition), where a 30 min lead costs about 6% of a
   replica's time. The bench now defaults to 60 min and 30 min.
 - **slurmctld can fail an `sbatch` and still queue the job, 22 s later.**
