@@ -2,6 +2,7 @@ package autoscale
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -133,5 +134,29 @@ func TestSlurmProvider(t *testing.T) {
 	}
 	if reps, _ := s.List(ctx); !reps[0].Draining {
 		t.Error("a drained job should stay marked while it is still in the queue")
+	}
+}
+
+func TestSlurmLaunchFindsJobAcceptedDespiteError(t *testing.T) {
+	sbatches := 0
+	queue := "101|RUNNING|2026-10-22T06:30:00\n"
+	s := &Slurm{Script: "/c/r.sbatch", JobName: "pool", RecheckWait: time.Millisecond,
+		Exec: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			switch name {
+			case "squeue":
+				return []byte(queue), nil
+			case "sbatch":
+				sbatches++
+				// slurmctld queued the job, then failed the reply.
+				queue += "102|PENDING|N/A\n"
+				return nil, errors.New("sbatch: error: Batch job submission failed: Unexpected message received")
+			}
+			return nil, nil
+		}}
+	ctx := context.Background()
+	s.List(ctx)
+	r, err := s.Launch(ctx)
+	if err != nil || r.ID != "102" || sbatches != 1 {
+		t.Errorf("launch = %+v, %v after %d sbatch calls; want the accepted job 102 and no resubmission", r, err, sbatches)
 	}
 }

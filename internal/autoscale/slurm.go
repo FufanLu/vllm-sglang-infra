@@ -1,6 +1,7 @@
 package autoscale
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os/exec"
@@ -18,9 +19,13 @@ type Slurm struct {
 	JobName string   // identifies this pool's jobs in squeue
 	// Exec runs a Slurm command; tests replace it.
 	Exec func(ctx context.Context, name string, args ...string) ([]byte, error)
+	// RecheckWait is how long Launch waits before looking for a job that a
+	// failed sbatch may have created anyway (default 5 s).
+	RecheckWait time.Duration
 
 	mu       sync.Mutex
 	draining map[string]bool
+	listed   map[string]bool // job IDs in the last List
 }
 
 func (s *Slurm) run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -71,17 +76,50 @@ func (s *Slurm) List(ctx context.Context) ([]Replica, error) {
 			delete(s.draining, id) // gone from the queue
 		}
 	}
+	s.listed = seen
 	return reps, nil
 }
 
 func (s *Slurm) Launch(ctx context.Context) (Replica, error) {
 	args := append([]string{"--parsable", "--job-name", s.JobName, s.Script}, s.Args...)
+	s.mu.Lock()
+	before := s.listed
+	s.mu.Unlock()
 	out, err := s.run(ctx, "sbatch", args...)
 	if err != nil {
+		// slurmctld under load can fail the reply after accepting the job
+		// ("Unexpected message received", "Socket timed out"). Submitting
+		// again would start a second replica, so look for the job first.
+		if r, ok := s.findNew(ctx, before); ok {
+			return r, nil
+		}
 		return Replica{}, err
 	}
 	id, _, _ := strings.Cut(strings.TrimSpace(string(out)), ";") // "123;cluster" on federated setups
 	return Replica{ID: id, State: Pending}, nil
+}
+
+// findNew lists the pool a few times and returns a job that was not in
+// before.
+func (s *Slurm) findNew(ctx context.Context, before map[string]bool) (Replica, bool) {
+	wait := cmp.Or(s.RecheckWait, 5*time.Second)
+	for range 3 {
+		select {
+		case <-ctx.Done():
+			return Replica{}, false
+		case <-time.After(wait):
+		}
+		reps, err := s.List(ctx)
+		if err != nil {
+			continue
+		}
+		for _, r := range reps {
+			if !before[r.ID] && !r.Draining {
+				return r, true
+			}
+		}
+	}
+	return Replica{}, false
 }
 
 // Drain cancels a queued job outright; a running one gets SIGTERM in its
